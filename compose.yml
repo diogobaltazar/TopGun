@@ -1,0 +1,19 @@
+services:
+  rose:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: rose:latest
+    volumes:
+      - type: bind
+        source: ${TARGET_PROJECT:-.}
+        target: /project
+      - type: bind
+        source: ${HOME}/.claude
+        target: /claude
+      - type: bind
+        source: ${HOME}/.ssh
+        target: /root/.ssh
+        read_only: true
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
