@@ -132,7 +132,7 @@ Construct the body:
 ```
 <summary sentence>
 
-Closes #12, #34, #56, #57
+Closes #12, closes #34, closes #56, closes #57
 ```
 Where #56, #57 are the newly created issues.
 
@@ -210,7 +210,7 @@ Fetch the current PR body:
 gh pr view --json body --jq '.body'
 ```
 
-Append any newly covered and newly created issue numbers to the existing `Closes` line (or add one if absent), then update:
+Append any newly covered and newly created issue numbers to the existing `Closes` line (or add one if absent), each preceded by its own `closes` keyword (e.g. `closes #45, closes #56`), then update:
 ```bash
 gh pr edit --body "<updated body>"
 ```
