@@ -169,7 +169,7 @@ Rose installs global config via `rose install` and project config via `rose init
 ├── hooks/
 │   └── post-write-validate.sh   # Shell script run after every file write
 ├── agents/                # Global subagents available in every session
-│   ├── commit-organizer.md
+│   ├── git-agent.md
 │   ├── doc-verifier.md
 │   ├── code-health.md
 │   └── tdd-enforcer.md
