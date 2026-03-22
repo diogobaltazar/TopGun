@@ -1,6 +1,6 @@
 ---
 name: gh-agent
-description: Handles GitHub operations. Two modes — (1) feature setup: creates a GitHub issue, creates a branch, and optionally checks it out locally; accepts `checkout=false` to skip local checkout. (2) merge: `merge` creates a PR against the default branch (or updates an existing one, analysing new commits for uncovered issues); `merge approve checkout` merges it, pulls, and checks out the default branch (requires admin).
+description: Handles GitHub operations. Two modes — (1) feature setup: creates a GitHub issue, creates a branch, and optionally creates a git worktree for isolated parallel development; accepts `checkout=false` to skip. (2) merge: `merge` creates a PR against the default branch (or updates an existing one, analysing new commits for uncovered issues); `merge approve checkout` merges it, pulls, checks out the default branch, and removes the feature worktree (requires admin).
 model: sonnet
 tools: Bash
 ---
@@ -44,9 +44,18 @@ Branch naming: `feat/<issue-number>-<kebab-case-slug-of-title>`
 git fetch origin
 ```
 
-**If `checkout=true` (default):** create and checkout locally:
+**If `checkout=true` (default):** create a git worktree in a sibling directory:
 ```bash
-git checkout -b feat/<issue-number>-<slug> origin/<default-branch>
+# Derive repo name from the repo root directory
+repo_name=$(basename "$(git rev-parse --show-toplevel)")
+worktree_path="../${repo_name}-worktrees/feat/<issue-number>-<slug>"
+
+# Check if a worktree for this branch already exists
+if git worktree list | grep -q "feat/<issue-number>-<slug>"; then
+  echo "Worktree already exists at $worktree_path"
+else
+  git worktree add "$worktree_path" -b feat/<issue-number>-<slug> origin/<default-branch>
+fi
 ```
 
 **If `checkout=false`:** create the branch without switching to it:
@@ -60,7 +69,7 @@ git push origin feat/<issue-number>-<slug>
 Inform the user:
 - The GitHub issue URL
 - The branch name created
-- Whether the branch is checked out locally or only exists on the remote
+- If `checkout=true`: the full worktree path — instruct the user to `cd` into it to begin work
 
 ---
 
@@ -230,4 +239,17 @@ git checkout <default-branch>
 git pull
 ```
 
-Confirm to the user that the PR was merged and the local repo is on the default branch.
+Remove the feature worktree if one exists:
+```bash
+repo_name=$(basename "$(git rev-parse --show-toplevel)")
+branch_name=$(git rev-parse --abbrev-ref HEAD)  # captured before checkout
+worktree_path="../${repo_name}-worktrees/${branch_name}"
+
+if [ -d "$worktree_path" ]; then
+  git worktree remove "$worktree_path"
+fi
+```
+
+If `git worktree remove` fails (e.g. uncommitted changes remain in the worktree), report the failure and the worktree path clearly — do not force-remove.
+
+Confirm to the user that the PR was merged, the local repo is on the default branch, and whether the worktree was removed.
