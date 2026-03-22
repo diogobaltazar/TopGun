@@ -72,4 +72,3 @@ Once the user has confirmed the feature description with the analyst-agent, invo
 Report to the user:
 - The GitHub issue URL and branch name (if this was a new feature)
 - The files created or updated by `project-conf-agent`
-
