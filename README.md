@@ -130,10 +130,10 @@ Built-in configs shipped with the image:
 
 ## This repo IS the config
 
-All files under `.claude/` are the source of truth:
-- `.claude/template/` — copied by `rose init`
-- `.claude/global/` — installed by `rose install`
-- `.claude/registry/` — imported by `rose add`
+These top-level directories are the source of truth:
+- `template/` — copied by `rose init`
+- `global/` — installed by `rose install`
+- `registry/` — imported by `rose add`
 
 To update config, edit files here and rebuild the image.
 
@@ -465,7 +465,7 @@ The `Validation Commands` block is especially important: the `Stop` hook's promp
 
 The registry is a collection of reusable agent configs for common technology components. `rose add <name>` copies a registry agent into the current project's `.claude/agents/`.
 
-Registry agents live in `.claude/registry/<name>/agent.md` inside the rose image. `rose register` opens a PR to add a new agent to the registry.
+Registry agents live in `registry/<name>/agent.md` inside the rose image. `rose register` opens a PR to add a new agent to the registry.
 
 Built-in registry agents:
 

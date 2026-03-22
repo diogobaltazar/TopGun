@@ -11,13 +11,13 @@ COPY cli.py .
 COPY commands/ commands/
 
 # rose init  — project template
-COPY .claude/template/ template/
+COPY template/ template/
 
 # rose install — global Claude config
-COPY .claude/global/ global/
+COPY global/ global/
 
 # rose add — registry configs
-COPY .claude/registry/ registry/
+COPY registry/ registry/
 
 WORKDIR /project
 
