@@ -32,6 +32,25 @@ An orchestrating slash command that:
 - Accepts `$ARGUMENTS` to describe what the user wants to do with this feature
 - Invokes the feature's analyst, engineer, and tester agents in a sensible sequence
 - Carries enough feature context that the user can invoke it without re-explaining the domain
+- Uses the worktree lifecycle for branch isolation — `EnterWorktree` when starting a unit of work, `ExitWorktree(action=remove)` when done
+
+The command frontmatter must include `EnterWorktree` and `ExitWorktree` in `allowed-tools`. The generated command should follow this pattern for any work that touches a branch:
+
+```markdown
+---
+allowed-tools: Agent, Bash, EnterWorktree, ExitWorktree, ...
+---
+...
+# Starting work
+Call EnterWorktree(name=<branch-name>) to create an isolated worktree and switch the session into it.
+Inside the worktree, rename the branch and push:
+  git branch -m <branch-name>
+  git push -u origin HEAD
+
+# Finishing work
+Call ExitWorktree(action=remove) to return to the main directory and remove the worktree.
+Then git pull to sync the default branch.
+```
 
 ### 2. Three feature agents (flat naming — no subdirectories):
 
