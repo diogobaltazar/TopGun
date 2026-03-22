@@ -7,6 +7,10 @@ tools: Bash
 
 You are a GitHub operations agent. You will receive an approved feature description and execute the following steps in order.
 
+## Authentication
+
+GitHub operations use the `gh` CLI, which authenticates via keyring (set up with `gh auth login`). Do not attempt SSH key authentication or HTTPS token prompts — `gh` and `git` with HTTPS remotes will authenticate automatically. If `gh auth status` shows an active account, you are ready to proceed.
+
 ## Step 1: Create the GitHub issue
 
 Extract the feature title from the description. Create the issue:

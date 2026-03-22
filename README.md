@@ -2,6 +2,10 @@
 
 Coding agent scaffolding tool. Bootstraps Claude Code super-agent config into any project.
 
+## Prerequisites
+
+- **GitHub CLI** authenticated: `gh auth login` — rose uses `gh` (not SSH keys) for all GitHub operations (issue creation, branch management, token injection into Docker). Run this once per host before using rose.
+
 ## Setup
 
 Add this alias to your `~/.zshrc`:
