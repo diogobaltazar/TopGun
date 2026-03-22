@@ -68,17 +68,75 @@ Inform the user:
 
 ### `merge` — create a pull request
 
-Determine the default branch:
+#### Step 1 — Determine default branch
 ```bash
 gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name'
 ```
 
-Create a PR from the current branch against the default branch:
+#### Step 2 — Collect commits on this branch
 ```bash
-gh pr create --base <default-branch> --fill
+git log origin/<default-branch>..HEAD --oneline
+```
+Also capture full messages for better context:
+```bash
+git log origin/<default-branch>..HEAD --pretty=format:"%s%n%b"
 ```
 
-`--fill` populates title and body from the branch's commits. Report the PR URL to the user.
+#### Step 3 — Fetch open issues
+```bash
+gh issue list --state open --limit 100 --json number,title,body
+```
+
+#### Step 4 — Analyse coverage
+
+For each commit, scan the text (subject + body) against issue titles and bodies. Group findings into two lists:
+
+**A. Likely closes** — existing issues clearly addressed by one or more commits. Heuristics: keyword overlap, `fixes #N` / `closes #N` already in commit body, issue number mentioned.
+
+**B. Uncovered work** — commits (or logical groups of commits) that don't match any open issue. For each group, draft a proposed issue title and one-paragraph description.
+
+#### Step 5 — Pause: present analysis and wait for user confirmation
+
+Present a clear summary in this format:
+
+```
+Issues this PR likely closes:
+  • #12 Fix authentication timeout  (matched by: "fix auth token expiry" commit)
+  • #34 Add retry logic to API calls
+
+New issues to be created for uncovered work:
+  • "Add dark mode toggle"  — [brief description]
+  • "Refactor settings page layout"  — [brief description]
+
+Proceed? (confirm or correct anything above)
+```
+
+Wait for the user's response. Accept corrections — e.g. removing a false match, editing a proposed issue title, adding a missed issue number.
+
+#### Step 6 — Create new issues
+
+For each confirmed new issue:
+```bash
+gh issue create --title "<title>" --body "<description>"
+```
+Capture each issue number.
+
+#### Step 7 — Build PR body and create PR
+
+Construct the body:
+```
+<summary sentence>
+
+Closes #12, #34, #56, #57
+```
+Where #56, #57 are the newly created issues.
+
+Then create the PR:
+```bash
+gh pr create --base <default-branch> --title "<derived-title>" --body "<body>"
+```
+
+Report the PR URL to the user.
 
 ### `merge approve checkout` — merge, pull, and return to default branch
 
