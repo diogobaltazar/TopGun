@@ -68,14 +68,8 @@ Run once per host. Installs to `~/.claude`:
 │   └── post-write-validate.sh      # lints every file after Write/Edit
 ├── agents/
 │   ├── git-agent.md                # commit and push operations
-│   ├── doc-verifier.md             # syncs docs with implementation
-│   ├── code-health.md              # audits for dead code and tech debt
-│   └── tdd-enforcer.md             # enforces RED → GREEN → REFACTOR
 └── commands/
     ├── git.md                      # /git commit, /git push, /git commit push
-    ├── verify.md                   # /verify
-    ├── docs.md                     # /docs
-    ├── health.md                   # /health
     └── issue.md                    # /issue
 ```
 
@@ -170,14 +164,8 @@ Rose installs global config via `rose install` and project config via `rose init
 │   └── post-write-validate.sh   # Shell script run after every file write
 ├── agents/                # Global subagents available in every session
 │   ├── git-agent.md
-│   ├── doc-verifier.md
-│   ├── code-health.md
-│   └── tdd-enforcer.md
 └── commands/              # Slash commands available in every session
     ├── commit.md
-    ├── verify.md
-    ├── docs.md
-    └── health.md
 ```
 
 ---
@@ -302,9 +290,6 @@ Claude sees all available agents' `name` and `description` fields in its context
 | Agent | Description | Tools |
 |-------|-------------|-------|
 | `git-agent` | Executes git operations sequentially: commit (groups changes, Conventional Commits, no body) and push | Bash, Read, Glob, Grep |
-| `doc-verifier` | Checks docs match implementation; updates outdated docs in place | Read, Write, Edit, Glob, Grep, Bash |
-| `code-health` | Audits for dead code, duplication, and tech debt; produces a prioritised report without making changes | Read, Glob, Grep, Bash |
-| `tdd-enforcer` | Enforces RED → GREEN → REFACTOR cycle; writes failing test first, then minimal implementation | Read, Write, Edit, Bash, Glob, Grep |
 
 **Rose's project template agents** (copied by `rose init`, one per component):
 
@@ -339,7 +324,7 @@ Use $ARGUMENTS to capture anything the user types after the command name.
 | `description` | Shown in the `/` picker UI |
 | `allowed-tools` | Tools Claude may use when executing this command |
 
-**`$ARGUMENTS`** is replaced with everything the user typed after the command name. For example, `/health src/auth` sets `$ARGUMENTS` to `src/auth`.
+**`$ARGUMENTS`** is replaced with everything the user typed after the command name. For example, `/git commit push` sets `$ARGUMENTS` to `commit push`.
 
 **Command placement:**
 
@@ -351,9 +336,6 @@ Use $ARGUMENTS to capture anything the user types after the command name.
 | Command | What it does |
 |---------|-------------|
 | `/git` | Invokes `git-agent` to run git operations sequentially (commit, push) |
-| `/verify` | Runs lint → typecheck → tests → doc check; fixes failures before reporting |
-| `/docs` | Invokes `doc-verifier` agent to sync docs with implementation |
-| `/health` | Invokes `code-health` agent to produce a prioritised audit report |
 
 ---
 
