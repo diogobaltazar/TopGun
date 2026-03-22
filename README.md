@@ -68,9 +68,13 @@ Run once per host. Installs to `~/.claude`:
 │   └── post-write-validate.sh      # lints every file after Write/Edit
 ├── agents/
 │   ├── git-agent.md                # commit and push operations
+│   ├── analyst-agent.md            # feature analysis and scoping
+│   └── gh-agent.md                 # GitHub issue + branch creation
 └── commands/
     ├── git.md                      # /git commit, /git push, /git commit push
-    └── issue.md                    # /issue
+    ├── feature.md                  # /feature
+    ├── issue.md                    # /issue
+    └── commit.md                   # /commit
 ```
 
 ```bash
@@ -336,6 +340,56 @@ Use $ARGUMENTS to capture anything the user types after the command name.
 | Command | What it does |
 |---------|-------------|
 | `/git` | Invokes `git-agent` to run git operations sequentially (commit, push) |
+| `/feature` | Orchestrates analysis → GitHub issue → branch checkout for a new feature |
+| `/issue` | Drafts and creates a GitHub issue, then branches and checks out |
+
+---
+
+### `/feature` — multi-agent workflow
+
+`/feature <idea>` orchestrates three participants — the user, `analyst-agent`, and `gh-agent` — to go from a rough idea to a ready-to-work branch.
+
+```
+User                     /feature (orchestrator)       analyst-agent              gh-agent
+ │                               │                           │                       │
+ │  /feature <idea>              │                           │                       │
+ │──────────────────────────────>│                           │                       │
+ │                               │  invoke(idea)             │                       │
+ │                               │──────────────────────────>│                       │
+ │                               │                           │ read CLAUDE.md,       │
+ │                               │                           │ explore codebase,     │
+ │                               │                           │ research web          │
+ │                               │                           │                       │
+ │<────────────────── questions / clarifications ────────────│                       │
+ │─────────────────── answers ──────────────────────────────>│                       │
+ │                    (as many rounds as needed)             │                       │
+ │                               │                           │                       │
+ │<──────────────── proposed feature description ────────────│                       │
+ │                               │                           │                       │
+ │  confirm / revise             │                           │                       │
+ │──────────────────────────────────────────────────────────>│                       │
+ │                               │                           │                       │
+ │                               │<── approved description ──│                       │
+ │                               │                           │                       │
+ │                               │  invoke(description)                              │
+ │                               │──────────────────────────────────────────────────>│
+ │                               │                           │  gh issue create      │
+ │                               │                           │  git fetch + checkout │
+ │                               │                           │                       │
+ │<──────────────────── issue URL + branch name ─────────────────────────────────────│
+ │                               │                           │                       │
+```
+
+**Agents involved:**
+
+| Agent | Role | Model |
+|-------|------|-------|
+| `analyst-agent` | Researches the codebase and web, asks clarifying questions, proposes and iterates on the feature description until the user confirms | Opus |
+| `gh-agent` | Creates the GitHub issue, determines the default branch, creates and checks out a `feat/<n>-<slug>` branch | Sonnet |
+
+**What you get at the end:**
+- A GitHub issue with the full feature description
+- A local branch `feat/<issue-number>-<slug>` checked out and ready to implement
 
 ---
 
