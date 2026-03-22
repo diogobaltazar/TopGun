@@ -230,7 +230,7 @@ User         /feature          gh-agent
  │────────────────────────────────>│
  │               │                 │ gh issue create (new issues)
  │               │                 │ gh pr create --body "Closes #..."
- │<── PR URL ────────────────────────
+ │<── PR URL ──────────────────────│
 
 
 /feature merge checkout                      (merge after testing locally)
@@ -245,7 +245,7 @@ User         /feature              gh-agent
  │               │                     │ git checkout <default>
  │               │                     │ git pull
  │               │                     │ git branch -d <feature>
- │<─ done ────────────────────────────────
+ │<─ done ─────────────────────────────│
 ```
 
 ---
