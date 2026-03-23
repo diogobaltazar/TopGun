@@ -19,13 +19,21 @@ mkdir -p "$LOG_DIR"
 
 TS=$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")
 
+# Use --git-common-dir so worktrees resolve to the main repo root, not the worktree path.
+REPO=$(dirname "$(git -C "${CLAUDE_PROJECT_DIR:-$(pwd)}" rev-parse --absolute-git-dir 2>/dev/null | sed 's|/worktrees/[^/]*$||')" 2>/dev/null || echo "unknown")
+BRANCH=$(git -C "${CLAUDE_PROJECT_DIR:-$(pwd)}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+ISSUE=$(echo "$BRANCH" | grep -oE 'feat/([0-9]+)-' | grep -oE '[0-9]+' || echo "null")
+
 # Write meta.json.
 cat > "$META_FILE" <<EOF
 {
   "session_id": "${SESSION_ID}",
   "started_at": "${TS}",
   "status": "in_progress",
-  "outcome": null
+  "outcome": null,
+  "repository": "${REPO}",
+  "branch": "${BRANCH}",
+  "issue": "${ISSUE}"
 }
 EOF
 
