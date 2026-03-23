@@ -7,14 +7,14 @@
 
 set -euo pipefail
 
-SESSION_ID="${CLAUDE_SESSION_ID:-unknown}"
+# Read the full stdin payload once.
+PAYLOAD=$(cat)
+
+SESSION_ID=$(echo "$PAYLOAD" | python3 -c "import sys,json; print(json.load(sys.stdin).get('session_id','unknown'))" 2>/dev/null || echo "unknown")
 LOG_DIR="${HOME}/.claude/logs/${SESSION_ID}"
 EVENTS_FILE="${LOG_DIR}/events.jsonl"
 
 mkdir -p "$LOG_DIR"
-
-# Read the full stdin payload once.
-PAYLOAD=$(cat)
 
 TOOL_NAME=$(echo "$PAYLOAD" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('tool_name','unknown'))" 2>/dev/null || echo "unknown")
 

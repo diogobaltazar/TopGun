@@ -7,7 +7,10 @@
 
 set -euo pipefail
 
-SESSION_ID="${CLAUDE_SESSION_ID:-unknown}"
+# Read stdin once; session_id lives in the JSON payload, not in env.
+STDIN_PAYLOAD=$(cat)
+SESSION_ID=$(echo "$STDIN_PAYLOAD" | python3 -c "import sys,json; print(json.load(sys.stdin).get('session_id','unknown'))" 2>/dev/null || echo "unknown")
+
 LOG_DIR="${HOME}/.claude/logs/${SESSION_ID}"
 EVENTS_FILE="${LOG_DIR}/events.jsonl"
 META_FILE="${LOG_DIR}/meta.json"
