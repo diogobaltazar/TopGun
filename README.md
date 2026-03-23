@@ -33,22 +33,9 @@ If you're working on rose itself, set `ROSE_DEV` to the repo path. The function 
 
 ```bash
 export ROSE_DEV="$HOME/rose"
-
-rose() {
-  local cmd="${1:-help}"
-  if [[ -n "${ROSE_DEV:-}" ]]; then
-    TARGET_PROJECT="$(pwd)" GITHUB_TOKEN="$(gh auth token 2>/dev/null)" \
-      docker compose --progress quiet -f "$ROSE_DEV/compose.yml" run --rm rose "$cmd" "${@:2}"
-  else
-    docker run --rm -it \
-      -v "$(pwd):/project" \
-      -v "$HOME/.claude:/claude" \
-      -v "$HOME/.ssh:/root/.ssh:ro" \
-      -e GITHUB_TOKEN="$(gh auth token 2>/dev/null)" \
-      rose:latest "$cmd" "${@:2}"
-  fi
-}
 ```
+
+The `rose` shell function auto-detects rose source trees: if the current directory contains `compose.yml` and `src/rose/`, it uses that directory automatically — no need to update `ROSE_DEV` when switching between the main repo and worktrees.
 
 Unset `ROSE_DEV` (or don't set it) to use the published image like a regular client.
 
@@ -60,6 +47,9 @@ Unset `ROSE_DEV` (or don't set it) to use the published image like a regular cli
 | `rose reinstall` | Wipe `~/.claude` and reinstall from scratch |
 | `rose remove` | Remove rose Claude setup from current project |
 | `rose uninstall` | Remove rose config from `~/.claude` |
+| `rose observe` | Start the live session dashboard at `http://localhost:5100` |
+
+`rose observe` is handled by the shell function — it runs `docker compose up api web` directly on the host and cannot be invoked from inside the rose container.
 
 ### rose install
 

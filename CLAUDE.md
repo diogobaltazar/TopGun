@@ -34,12 +34,24 @@ global/        # Installed to ~/.claude/ by `rose install`
     ├── github.md       # /github skill
     ├── git.md          # /git skill
     └── project.md      # /project skill (init, spec update)
-src/rose/      # Python CLI package
-├── cli.py     # Typer entrypoint
-└── commands/  # Command implementations
+src/rose/cli/  # Typer entrypoint (package)
+├── __init__.py     # app definition, command registration
+├── install.py      # rose install
+├── uninstall.py    # rose uninstall
+└── observe.py      # rose observe
+src/rose/api/  # FastAPI backend for observe dashboard
+├── Dockerfile
+├── requirements.txt
+└── main.py
+src/rose/web/  # nginx frontend for observe dashboard
+├── Dockerfile
+├── nginx.conf
+├── index.html
+├── app.js
+└── style.css
 pyproject.toml
 Dockerfile
-compose.yml
+compose.yml    # rose + api + web services
 ```
 
 ## Feature Lifecycle — Process Specification
