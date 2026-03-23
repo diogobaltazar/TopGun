@@ -39,7 +39,7 @@ def install(
 
     console.print()
     console.print(Panel("[bold magenta]rose install[/bold magenta]", expand=False))
-    console.print(f"  Target: [cyan]{claude_dir}[/cyan]\n")
+    console.print(f"  Target: [cyan]~/.claude[/cyan]\n")
 
     if not claude_dir.exists():
         console.print(f"  [red]Error:[/red] {claude_dir} does not exist.\n")
@@ -79,7 +79,4 @@ def install(
 
     console.print(results)
 
-    logs_dir = claude_dir / "logs"
-    logs_dir.mkdir(exist_ok=True)
-    console.print(f"  [dim]logs/[/dim] ready at [cyan]{logs_dir}[/cyan]\n")
     console.print()

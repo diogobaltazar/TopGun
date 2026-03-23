@@ -15,15 +15,16 @@ Add the following to your `~/.zshrc` and reload with `source ~/.zshrc`:
 export ROSE_DEV="$HOME/rose"
 
 _rose_build_if_changed() {
+  local dev_dir="$1"
   local hash_file="${XDG_CACHE_HOME:-$HOME/.cache}/rose/build_hash"
   local current_hash
-  current_hash=$(find "$ROSE_DEV" \
+  current_hash=$(find "$dev_dir" \
     \( -name "*.py" -o -name "*.md" -o -name "*.json" -o -name "*.sh" -o -name "Dockerfile" -o -name "requirements.txt" \) \
     -not -path "*/.git/*" \
     | sort | xargs shasum -a 256 2>/dev/null | shasum -a 256 | cut -d' ' -f1)
 
   if [[ "$(cat "$hash_file" 2>/dev/null)" != "$current_hash" ]]; then
-    docker compose -f "$ROSE_DEV/compose.yml" build rose > /dev/null 2>&1
+    docker compose -f "$dev_dir/compose.yml" build rose > /dev/null 2>&1
     mkdir -p "$(dirname "$hash_file")"
     echo "$current_hash" > "$hash_file"
   fi
@@ -31,6 +32,14 @@ _rose_build_if_changed() {
 
 rose() {
   local cmd="${1:-help}"
+
+  # Auto-detect: prefer cwd if it looks like a rose source tree (worktree support).
+  local _rose_dev
+  if [[ -f "$(pwd)/compose.yml" && -d "$(pwd)/src/rose" ]]; then
+    _rose_dev="$(pwd)"
+  else
+    _rose_dev="${ROSE_DEV:-}"
+  fi
 
   if [[ "$cmd" == "install" || "$cmd" == "reinstall" ]]; then
     shift
@@ -57,10 +66,10 @@ rose() {
 
     mkdir -p "$mount_path"
 
-    if [[ -n "${ROSE_DEV:-}" ]]; then
-      _rose_build_if_changed
+    if [[ -n "$_rose_dev" ]]; then
+      _rose_build_if_changed "$_rose_dev"
       TARGET_PROJECT="$(pwd)" GITHUB_TOKEN="$(gh auth token 2>/dev/null)" \
-        docker compose --progress quiet -f "$ROSE_DEV/compose.yml" run --rm rose install "${extra_args[@]}"
+        docker compose --progress quiet -f "$_rose_dev/compose.yml" run --rm rose install "${extra_args[@]}"
     else
       docker run --rm -it \
         -v "$(pwd):/project" \
@@ -75,51 +84,9 @@ rose() {
       echo "Symlink: ~/.claude -> $link_path"
     fi
 
-  elif [[ "$cmd" == "config" ]]; then
-    local domain="${2:-}" op="${3:-}" arg="${4:-}"
-    local config_file="$HOME/.config/rose/config.json"
-    mkdir -p "$(dirname "$config_file")"
-    case "$domain/$op" in
-      observe/add)
-        local path; path=$(python3 -c "import os; print(os.path.realpath('${arg/#\~/$HOME}'))")
-        python3 -c "
-import json; f='${config_file}'
-try: d=json.load(open(f))
-except: d={}
-ps=d.setdefault('projects',[])
-if '${path}' not in ps: ps.append('${path}'); json.dump(d,open(f,'w'),indent=2); print('Added: ${path}')
-else: print('Already registered: ${path}')
-"     ;;
-      observe/remove)
-        local path; path=$(python3 -c "import os; print(os.path.realpath('${arg/#\~/$HOME}'))")
-        python3 -c "
-import json; f='${config_file}'
-try: d=json.load(open(f))
-except: d={}
-ps=d.get('projects',[])
-if '${path}' in ps: ps.remove('${path}'); d['projects']=ps; json.dump(d,open(f,'w'),indent=2); print('Removed: ${path}')
-else: print('Not registered: ${path}')
-"     ;;
-      observe/list)
-        python3 -c "
-import json; f='${config_file}'
-try: ps=json.load(open(f)).get('projects',[])
-except: ps=[]
-print('\n'.join(ps) if ps else 'No projects registered. Use: rose config observe add <path>')
-"     ;;
-      *) echo "Usage: rose config observe <add|remove|list> [path]" ;;
-    esac
-
   elif [[ "$cmd" == "observe" ]]; then
     local subcmd="${2:-}"
-    local dev_dir
-    # Auto-detect: prefer cwd if it looks like a rose source tree
-    if [[ -f "$(pwd)/compose.yml" && -d "$(pwd)/src/rose" ]]; then
-      dev_dir="$(pwd)"
-    else
-      dev_dir="${ROSE_DEV:-}"
-    fi
-    local compose_file="${dev_dir:+$dev_dir/}compose.yml"
+    local compose_file="${_rose_dev:+$_rose_dev/}compose.yml"
     case "$subcmd" in
       start)
         mkdir -p "$HOME/.claude/logs" "$HOME/.config/rose"
@@ -147,10 +114,10 @@ print('\n'.join(ps) if ps else 'No projects registered. Use: rose config observe
     esac
 
   else
-    if [[ -n "${ROSE_DEV:-}" ]]; then
-      _rose_build_if_changed
+    if [[ -n "$_rose_dev" ]]; then
+      _rose_build_if_changed "$_rose_dev"
       TARGET_PROJECT="$(pwd)" GITHUB_TOKEN="$(gh auth token 2>/dev/null)" \
-        docker compose --progress quiet -f "$ROSE_DEV/compose.yml" run --rm rose "$cmd" "${@:2}"
+        docker compose --progress quiet -f "$_rose_dev/compose.yml" run --rm rose "$cmd" "${@:2}"
     else
       docker run --rm -it \
         -v "$(pwd):/project" \
