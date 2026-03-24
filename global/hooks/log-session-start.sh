@@ -7,7 +7,10 @@
 
 set -euo pipefail
 
-SESSION_ID="${CLAUDE_SESSION_ID:-unknown}"
+# Read stdin once; session_id lives in the JSON payload, not in env.
+STDIN_PAYLOAD=$(cat)
+SESSION_ID=$(echo "$STDIN_PAYLOAD" | python3 -c "import sys,json; print(json.load(sys.stdin).get('session_id','unknown'))" 2>/dev/null || echo "unknown")
+
 LOG_DIR="${HOME}/.claude/logs/${SESSION_ID}"
 META_FILE="${LOG_DIR}/meta.json"
 EVENTS_FILE="${LOG_DIR}/events.jsonl"
@@ -36,6 +39,9 @@ cat > "$META_FILE" <<EOF
   "issue": "${ISSUE}"
 }
 EOF
+
+# Write the active session breadcrumb so agents can read the session ID.
+printf '%s' "${SESSION_ID}" > "${HOME}/.claude/logs/.active-session"
 
 # Write session.start event.
 printf '%s\n' "{\"ts\":\"${TS}\",\"session_id\":\"${SESSION_ID}\",\"seq\":1,\"source\":\"hook\",\"agent\":null,\"step\":null,\"event\":\"session.start\",\"payload\":{}}" \
