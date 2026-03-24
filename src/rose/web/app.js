@@ -560,13 +560,12 @@ function App() {
     <div id="layout">
       <Sidebar sessions={sessions} selectedId={selId} onSelect={setSelId} />
       <div id="main">
-        <div id="state-panel">
-          <StateMachine activeStep={activeStep} activeAgent={activeAgent} />
-        </div>
-        {selId
-          ? <SequenceDiagram events={events} activeAgent={activeAgent} />
-          : <div id="sequence-panel"><div className="placeholder">select a session</div></div>
-        }
+        {selId ? <>
+          <div id="state-panel">
+            <StateMachine activeStep={activeStep} activeAgent={activeAgent} />
+          </div>
+          <SequenceDiagram events={events} activeAgent={activeAgent} />
+        </> : <div className="placeholder">select a session</div>}
       </div>
     </div>
   );
