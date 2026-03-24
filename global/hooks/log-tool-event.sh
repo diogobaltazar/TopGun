@@ -22,8 +22,12 @@ TOOL_NAME=$(echo "$PAYLOAD" | python3 -c "import sys,json; d=json.load(sys.stdin
 TOOL_INPUT=$(echo "$PAYLOAD" | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
-raw = json.dumps(d.get('tool_input', {}))
-print(raw[:500] + ('...' if len(raw) > 500 else ''))
+inp = d.get('tool_input', {})
+raw = json.dumps(inp)
+if len(raw) > 500:
+    print(json.dumps({'_preview': raw[:497] + '...'}))
+else:
+    print(raw)
 " 2>/dev/null || echo "{}")
 
 TS=$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")

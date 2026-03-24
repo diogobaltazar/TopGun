@@ -82,6 +82,7 @@ def _load_session(session_dir: Path) -> dict | None:
         "repository": meta.get("repository", "unknown"),
         "branch": meta.get("branch", "unknown"),
         "issue": meta.get("issue", None),
+        "entry_point": meta.get("entry_point", None),
         "current_step": _derive_current_step(events_file),
         "status": "active",
     }
