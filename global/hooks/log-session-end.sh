@@ -38,6 +38,12 @@ SEQ=$(( $(wc -l < "$EVENTS_FILE" 2>/dev/null || echo 0) + 1 ))
 printf '%s\n' "{\"ts\":\"${TS}\",\"session_id\":\"${SESSION_ID}\",\"seq\":${SEQ},\"source\":\"hook\",\"agent\":null,\"step\":null,\"event\":\"session.end\",\"payload\":{\"outcome\":\"${OUTCOME}\",\"final_step\":\"${LAST_STEP:-null}\"}}" \
   >> "$EVENTS_FILE"
 
+# Clear active-session breadcrumb if it points to this session.
+ACTIVE_FILE="${HOME}/.claude/logs/.active-session"
+if [[ -f "$ACTIVE_FILE" ]] && [[ "$(cat "$ACTIVE_FILE")" == "$SESSION_ID" ]]; then
+  rm -f "$ACTIVE_FILE"
+fi
+
 # Update meta.json.
 if [[ -f "$META_FILE" ]]; then
   python3 -c "
