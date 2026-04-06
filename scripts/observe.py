@@ -229,127 +229,166 @@ def derive_messages(events):
     return msgs
 
 
-def fmt_sequence(events):
-    msgs = derive_messages(events)
+def lifeline_row():
+    return " " * TS_W + "".join("│" + " " * (COL_W - 1) for _ in ACTORS)
+
+
+def fmt_msg_row(msg):
+    """Render a single sequence message as two lines: arrow row + lifeline row."""
     n = len(ACTORS)
-    total_w = TS_W + n * COL_W
+    ts_str  = fmt_ts(msg["ts"])
+    from_id = msg["from"]
+    to_id   = msg["to"]
+    label   = msg["label"]
+    is_self = msg.get("self") or from_id == to_id
 
-    def lifeline_row(highlight_col=None, char="│"):
-        row = " " * TS_W
-        for i in range(n):
-            pipe = char if i == highlight_col else "│"
-            row += pipe + " " * (COL_W - 1)
-        return row
+    from_i = ACTOR_IDX.get(from_id, 0)
+    to_i   = ACTOR_IDX.get(to_id,   0)
 
-    lines = [
-        "  SEQUENCE DIAGRAM",
-        "  " + "─" * 56,
-        "",
-    ]
+    row = list(" " * TS_W)
+    for i in range(n):
+        pos = TS_W + i * COL_W
+        while len(row) <= pos:
+            row.append(" ")
+        row[pos] = "│"
+        for k in range(1, COL_W):
+            p = pos + k
+            while len(row) <= p:
+                row.append(" ")
+            if row[p] == "│":
+                break
+            row[p] = " "
 
-    # Header
-    header = " " * TS_W + "".join(
-        f"{a['label']:<{COL_W}}" for a in ACTORS
-    )
-    lines.append(header)
-    lines.append(lifeline_row())
+    if is_self:
+        pos = TS_W + from_i * COL_W
+        annotation = f"[{label}]"
+        for j, ch in enumerate(annotation):
+            p = pos + 1 + j
+            while len(row) <= p:
+                row.append(" ")
+            row[p] = ch
+    else:
+        left_i  = min(from_i, to_i)
+        right_i = max(from_i, to_i)
+        going_right = from_i < to_i
+        left_pos  = TS_W + left_i  * COL_W
+        right_pos = TS_W + right_i * COL_W
 
-    for msg in msgs:
-        ts_str   = fmt_ts(msg["ts"])
-        from_id  = msg["from"]
-        to_id    = msg["to"]
-        label    = msg["label"]
-        is_self  = msg.get("self") or from_id == to_id
-
-        from_i = ACTOR_IDX.get(from_id, 0)
-        to_i   = ACTOR_IDX.get(to_id,   0)
-
-        # Build character array for this row
-        row = list(" " * TS_W + "│" + " " * (COL_W - 1))
-        for i in range(n):
-            pos = TS_W + i * COL_W
-            if pos < len(row):
-                row[pos] = "│"
-            else:
-                row.extend(" " * (pos - len(row) + 1))
-                row[pos] = "│"
-
-        if is_self:
-            pos = TS_W + from_i * COL_W
-            annotation = f"[{label}]"
-            for j, ch in enumerate(annotation):
-                p = pos + 1 + j
-                if p < len(row):
-                    row[p] = ch
-                else:
-                    row.append(ch)
+        for p in range(left_pos + 1, right_pos):
+            row[p] = "─"
+        if going_right:
+            row[left_pos]  = "├"
+            row[right_pos] = "▶"
         else:
-            left_i  = min(from_i, to_i)
-            right_i = max(from_i, to_i)
-            going_right = from_i < to_i
+            row[left_pos]  = "◀"
+            row[right_pos] = "┤"
 
-            left_pos  = TS_W + left_i  * COL_W
-            right_pos = TS_W + right_i * COL_W
+        label_pos = right_pos + 1
+        for j, ch in enumerate(f" {label}"):
+            p = label_pos + j
+            while len(row) <= p:
+                row.append(" ")
+            row[p] = ch
 
-            # Shaft
-            for p in range(left_pos + 1, right_pos):
-                row[p] = "─"
+    arrow_line = "".join(row)
+    return [f"{ts_str}  {arrow_line[TS_W:]}", lifeline_row()]
 
-            # End markers
-            if going_right:
-                row[left_pos]  = "├"
-                row[right_pos] = "▶"
-            else:
-                row[left_pos]  = "◀"
-                row[right_pos] = "┤"
 
-            # Label after the right side
-            label_pos = right_pos + 1
-            for j, ch in enumerate(f" {label}"):
-                p = label_pos + j
-                if p < len(row):
-                    row[p] = ch
-                else:
-                    row.append(ch)
-
-        line = "".join(row)
-        lines.append(f"{ts_str}  {line[TS_W:]}")
-        lines.append(lifeline_row())
-
-    if not msgs:
-        lines.append(lifeline_row())
-        lines.append(" " * (TS_W + n * COL_W // 2) + "(no events)")
-
-    lines.append("")
-    return "\n".join(lines)
+def fmt_sequence_header():
+    header = " " * TS_W + "".join(f"{a['label']:<{COL_W}}" for a in ACTORS)
+    return ["  SEQUENCE DIAGRAM", "  " + "─" * 56, "", header, lifeline_row()]
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
-def main():
-    session_id = resolve_session()
-    events, meta = load_session(session_id)
+TERMINAL_STATUSES = {"completed", "interrupted", "abandoned"}
+POLL_INTERVAL = 0.5  # seconds
 
+
+def main():
+    import time
+
+    session_id = resolve_session()
+    events_file = LOGS_DIR / session_id / "events.jsonl"
+    meta_file   = LOGS_DIR / session_id / "meta.json"
+
+    events, meta = load_session(session_id)
     title   = meta.get("title") or session_id
-    status  = meta.get("status", "unknown")
     started = fmt_ts(meta.get("started_at", ""))
-    ended   = fmt_ts(meta.get("ended_at", ""))
-    time_range = f"{started}" + (f" → {ended}" if ended.strip() else "")
 
     W = 58
     print()
     print("  " + "━" * W)
     print(f"  rose observe")
     print(f"  {title}")
-    print(f"  {session_id[:36]}  ·  {status}  ·  {time_range}")
+    print(f"  {session_id[:36]}  ·  {started}")
     print("  " + "━" * W)
     print()
 
-    node_states, dr_launched = derive_node_states(events)
-    print(fmt_state_machine(node_states, dr_launched))
-    print(fmt_sequence(events))
-    print("  " + "━" * W)
-    print()
+    # Print header
+    for line in fmt_sequence_header():
+        print(line)
+
+    # Render historical events
+    seen_steps = set()
+    for ev in events:
+        key = (ev.get("event"), ev.get("step"))
+        if key[0] in ("step.enter", "step.exit"):
+            if key in seen_steps:
+                continue
+            seen_steps.add(key)
+        msgs = derive_messages([ev])
+        for msg in msgs:
+            for line in fmt_msg_row(msg):
+                print(line)
+
+    # Tail the file for new events
+    file_pos = events_file.stat().st_size if events_file.exists() else 0
+
+    while True:
+        time.sleep(POLL_INTERVAL)
+
+        # Check meta for terminal status
+        try:
+            current_meta = json.loads(meta_file.read_text())
+            if current_meta.get("status") in TERMINAL_STATUSES:
+                # Drain any remaining events before exiting
+                pass
+        except Exception:
+            current_meta = {}
+
+        # Read new lines
+        if events_file.exists():
+            with open(events_file) as f:
+                f.seek(file_pos)
+                new_lines = f.readlines()
+                file_pos = f.tell()
+
+            for line in new_lines:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                key = (ev.get("event"), ev.get("step"))
+                if key[0] in ("step.enter", "step.exit"):
+                    if key in seen_steps:
+                        continue
+                    seen_steps.add(key)
+
+                msgs = derive_messages([ev])
+                for msg in msgs:
+                    for row in fmt_msg_row(msg):
+                        print(row)
+
+        if current_meta.get("status") in TERMINAL_STATUSES:
+            print()
+            print(f"  ━━  {current_meta.get('status', 'done')}  " + "━" * (W - 12))
+            print()
+            break
 
 
 if __name__ == "__main__":
