@@ -529,16 +529,22 @@ The gap: `agent_progress` entries only appear after the agent begins streaming. 
 
 If neither signal is available (old session, no hook log, no transcript link), the agent is assumed **done**. This avoids phantom live dots on historical sessions.
 
+### Why SubagentStop can be missed
+
+`SubagentStop` does not fire if the parent Claude Code process exits abruptly, or if the context limit is hit while an agent is mid-flight. This leaves an orphaned `SubagentStart` in the hook log, with no corresponding `SubagentStop`. If observed naïvely, such an agent appears live forever.
+
+The tool-result join is immune to this: it is written by Claude Code into the parent transcript, not by a hook, so it is reliable even when hooks fail to fire. This makes it the correct cross-check when the hook log says "live".
+
 ### Decision tree
 
 ```
-agent_id in hook_states?
-├─ yes → use hook_states[agent_id]          (Tier 1)
-└─ no  → agent_id in agent_tool_use?
-          ├─ yes → tool_use_id in completed_tool_uses?
-          │         ├─ yes → done            (Tier 2 — finished)
-          │         └─ no  → live            (Tier 2 — in progress)
-          └─ no  → done                      (Tier 3 — conservative)
+SubagentStop fired for this agent_id?
+├─ yes → done                                       (hook log — definitive)
+└─ no  → tool_result present in parent transcript?
+          ├─ yes → done                             (transcript join — SubagentStop missed)
+          └─ no  → SubagentStart fired?
+                    ├─ yes → live                   (genuinely in progress)
+                    └─ no  → done                   (no signal — conservative default)
 ```
 
 After computing `is_done`, status is clamped: a "live" agent in a dead session is still shown as "done".

@@ -290,17 +290,25 @@ def read_subagents(session_dir: Path, agent_tool_use: dict, completed_tool_uses:
                 pass
 
         # Determine live/done — in order of reliability:
-        #  1. Hook log (SubagentStart/SubagentStop) — authoritative real-time signal
-        #  2. Tool-result join via agent_progress entries — slight timing gap at startup
-        #  3. Assume done (conservative fallback for old sessions without hooks)
+        #  1. SubagentStop fired → definitively done
+        #  2. tool_result in parent transcript → done (SubagentStop may have been missed)
+        #  3. SubagentStart fired, no Stop, no tool_result → live
+        #  4. No hook data, no transcript link → conservative "done"
+        tool_use_id = agent_tool_use.get(agent_id, "")
+        tool_result_done = bool(tool_use_id and tool_use_id in completed_tool_uses)
+
         if hook_states and agent_id in hook_states:
-            is_done = hook_states[agent_id] == "done"
-        else:
-            tool_use_id = agent_tool_use.get(agent_id, "")
-            if tool_use_id:
-                is_done = tool_use_id in completed_tool_uses
+            if hook_states[agent_id] == "done":
+                is_done = True                   # SubagentStop fired
+            elif tool_result_done:
+                is_done = True                   # SubagentStop missed; tool_result is ground truth
             else:
-                is_done = True  # no signal available — conservative default
+                is_done = False                  # genuinely live
+        else:
+            if tool_use_id:
+                is_done = tool_result_done       # fall back to transcript join
+            else:
+                is_done = True                   # no signal — conservative default
         status = "live" if (not is_done) and session_live else "done"
 
         agents.append({
