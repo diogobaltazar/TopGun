@@ -296,9 +296,9 @@ def list_sessions():
     print()
     for s in sessions:
         status   = s["status"]
-        sid      = f"{BOLD}{s['session_id'][:8]}{RESET}"
+        sid      = f"{BOLD}{s['session_id']}{RESET}"
         psid     = s.get("process_sid", "")
-        resumed  = f"{DIM}←{psid[:8]}{RESET}" if psid and psid != s["session_id"] else ""
+        resumed  = f"{DIM}←{psid}{RESET}" if psid and psid != s["session_id"] else ""
         pid      = f"{DIM}pid {s['pid']}{RESET}" if s["pid"] else ""
         started  = fmt_dt(s["started_at"])
         project  = fmt_project(s["project"])
