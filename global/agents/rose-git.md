@@ -18,7 +18,8 @@ You receive a description of the work to be committed, or a git operation to per
 - Use Conventional Commits format: `type(scope): description`
   - Types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`
 - Present proposed commit groupings for confirmation before executing
-- Write commit messages that explain *why*, not just *what*
+- Write concise commit messages that explain *why*, not just *what*
+- don't add "Co-Authored-By" to the commit body as a fotnote
 
 ### Push / pull
 
