@@ -250,8 +250,14 @@ def read_subagents(session_dir: Path, agent_tool_use: dict, completed_tool_uses:
                 pass
 
         tool_use_id = agent_tool_use.get(agent_id, "")
-        is_done     = (not tool_use_id) or (tool_use_id in completed_tool_uses)
-        status      = "done" if is_done else ("live" if session_live else "done")
+        if tool_use_id:
+            # Link established via progress entries — tool_result is authoritative
+            is_done = tool_use_id in completed_tool_uses
+        else:
+            # No progress entries yet (agent just started, timing gap) —
+            # assume live if the session is live, done otherwise
+            is_done = not session_live
+        status = "live" if (not is_done) and session_live else "done"
 
         agents.append({
             "agent_id":      agent_id,
