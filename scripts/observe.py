@@ -1,420 +1,307 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
-rose-observe — ASCII flow diagram from events.jsonl
+rose observe — session inspector
 
 Usage:
-  python scripts/observe.py                 # reads active session
-  python scripts/observe.py <session-id>    # reads specific session
-  python scripts/observe.py --list          # list all sessions
+  python scripts/observe.py --list    # list all sessions
 """
 
 import json
+import os
+import re
+import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
-from datetime import datetime, timezone
 
-LOGS_DIR = Path.home() / ".claude" / "logs"
+PROJECTS_DIR = Path.home() / ".claude" / "projects"
+SESSIONS_DIR = Path.home() / ".claude" / "sessions"
 
-ACTORS = [
-    {"id": "user",          "label": "USER",    "col": 0},
-    {"id": "rose",          "label": "ROSE",    "col": 1},
-    {"id": "rose-research", "label": "RESEARCH","col": 2},
-    {"id": "rose-backlog",  "label": "BACKLOG", "col": 3},
-]
-ACTOR_IDX = {a["id"]: i for i, a in enumerate(ACTORS)}
-
-NODES = ["FP", "AF", "DR", "BI", "CONV"]
-
-
-# ── data loading ─────────────────────────────────────────────────────────────
-
-def load_session(session_id):
-    log_dir = LOGS_DIR / session_id
-    events = []
-    if (log_dir / "events.jsonl").exists():
-        with open(log_dir / "events.jsonl") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    try:
-                        events.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        pass
-    meta = {}
-    if (log_dir / "meta.json").exists():
-        with open(log_dir / "meta.json") as f:
-            try:
-                meta = json.load(f)
-            except json.JSONDecodeError:
-                pass
-    return events, meta
-
-
-def resolve_session():
-    if len(sys.argv) > 1 and sys.argv[1] == "--list":
-        list_sessions()
-        sys.exit(0)
-    if len(sys.argv) > 1:
-        return sys.argv[1]
-    active = LOGS_DIR / ".active-session"
-    if active.exists():
-        return active.read_text().strip()
-    # Fall back to most recent session by mtime
-    dirs = sorted(
-        [d for d in LOGS_DIR.iterdir() if d.is_dir()],
-        key=lambda d: d.stat().st_mtime,
-        reverse=True,
-    )
-    if dirs:
-        return dirs[0].name
-    print("No sessions found in ~/.claude/logs/", file=sys.stderr)
-    sys.exit(1)
-
+# ── ANSI ──────────────────────────────────────────────────────────────────────
 
 GREEN  = "\033[32m"
+YELLOW = "\033[33m"
+DIM    = "\033[2m"
+BLINK  = "\033[5m"
 RESET  = "\033[0m"
+BOLD   = "\033[1m"
 
 
-def list_sessions():
-    active_id = ""
+# ── Git helpers ───────────────────────────────────────────────────────────────
+
+def git(cwd: str, *args) -> str | None:
     try:
-        active_id = (LOGS_DIR / ".active-session").read_text().strip()
+        result = subprocess.run(
+            ["git", "-C", cwd, *args],
+            capture_output=True, text=True, timeout=3,
+        )
+        return result.stdout.strip() if result.returncode == 0 else None
     except Exception:
-        pass
+        return None
 
-    dirs = sorted(
-        [d for d in LOGS_DIR.iterdir() if d.is_dir() and (d / "meta.json").exists()],
-        key=lambda d: d.stat().st_mtime,
-        reverse=True,
-    )
-    print()
-    for d in dirs:
-        try:
-            meta = json.loads((d / "meta.json").read_text())
-        except Exception:
-            meta = {}
-        title  = meta.get("title") or ""
-        status = meta.get("status", "?")
-        ts     = fmt_ts(meta.get("started_at", ""))
-        ended  = fmt_ts(meta.get("ended_at", ""))
-        is_active = d.name == active_id
-        display_status = "active" if is_active else status
-        if is_active:
-            time_range = ts
-        elif ts.strip() and ended.strip():
-            time_range = f"{ts} → {ended}"
-        elif ended.strip():
-            time_range = f"→ {ended}"
+
+def git_info(cwd: str) -> dict:
+    """Return project root and worktree path for a given cwd."""
+    if not cwd or not Path(cwd).exists():
+        return {"project": None, "worktree": None}
+
+    git_dir = git(cwd, "rev-parse", "--git-dir")
+    if not git_dir:
+        return {"project": None, "worktree": None}
+
+    # A worktree's --git-dir looks like /path/to/repo/.git/worktrees/<name>
+    is_worktree = "/.git/worktrees/" in git_dir or git_dir.endswith("/worktrees")
+
+    if is_worktree:
+        # Common dir points to the main repo's .git
+        common_dir = git(cwd, "rev-parse", "--git-common-dir")
+        if common_dir:
+            project = str(Path(common_dir).resolve().parent)
         else:
-            time_range = ts
-        line = f"  {d.name}  {display_status:<12}  {time_range}  {title[:40]}"
-        if is_active:
-            print(f"{GREEN}{line}{RESET}")
-        else:
-            print(line)
-    print()
-
-
-# ── time formatting ───────────────────────────────────────────────────────────
-
-def fmt_ts(iso):
-    if not iso:
-        return "        "
-    try:
-        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
-        return dt.astimezone().strftime("%H:%M:%S")
-    except Exception:
-        return iso[:8] if len(iso) >= 8 else iso
-
-
-# ── state machine ─────────────────────────────────────────────────────────────
-
-def derive_node_states(events):
-    active, completed = set(), set()
-    for ev in events:
-        if ev.get("event") == "step.enter":
-            s = ev.get("step")
-            if s:
-                active.add(s)
-                completed.discard(s)
-        elif ev.get("event") == "step.exit":
-            s = ev.get("step")
-            if s:
-                active.discard(s)
-                completed.add(s)
-
-    states = {}
-    for n in NODES:
-        if n in active:
-            states[n] = "active"
-        elif n in completed:
-            states[n] = "completed"
-        else:
-            states[n] = "idle"
-
-    dr_launched = any(
-        ev.get("event") == "step.enter" and ev.get("step") == "DR"
-        for ev in events
-    )
-    required = ["DR", "BI"] if dr_launched else ["BI"]
-    if all(states.get(s) == "completed" for s in required):
-        states["CONV"] = "active"
-    if states.get("AF") == "completed" and all(states.get(s) == "completed" for s in required):
-        states["CONV"] = "completed"
-
-    return states, dr_launched
-
-
-def glyph(state, launched=True):
-    if not launched:
-        return "·"
-    return {"active": "◉", "completed": "✓", "idle": "○"}.get(state, "○")
-
-
-def fmt_state_machine(node_states, dr_launched):
-    FP   = glyph(node_states.get("FP",   "idle"))
-    AF   = glyph(node_states.get("AF",   "idle"))
-    DR   = glyph(node_states.get("DR",   "idle"), dr_launched)
-    BI   = glyph(node_states.get("BI",   "idle"))
-    CONV = glyph(node_states.get("CONV", "idle"))
-
-    dr_label = "DR  ROSE-RESEARCH" if dr_launched else "DR  ROSE-RESEARCH  (skipped)"
-    dr_top = "╭── ── ── ── ── ── ── ──╮" if not dr_launched else "╭──────────────────────╮"
-
-    lines = [
-        "  STATE MACHINE",
-        "  " + "─" * 56,
-        "",
-        f"                              {DR} {dr_label}",
-        f"                           {dr_top}",
-        f"  {FP} FP ──▶  {AF} AF ──┤                          ├──▶  {CONV} CONV",
-        f"  USER        ROSE       ╰──────────────────────╮  │",
-        f"                              {BI} BI  ROSE-BACKLOG  ╯",
-        "",
-    ]
-
-    # Status row
-    statuses = []
-    for n in NODES:
-        st = node_states.get(n, "idle")
-        if n == "DR" and not dr_launched:
-            st = "skipped"
-        statuses.append(f"{n}:{st}")
-    lines.append("  " + "  ".join(statuses))
-    lines.append("")
-    return "\n".join(lines)
-
-
-# ── sequence diagram ──────────────────────────────────────────────────────────
-
-COL_W = 16  # chars per actor column
-TS_W  = 10  # timestamp prefix
-
-
-def derive_messages(events):
-    msgs = []
-    seen = set()
-    for ev in events:
-        event   = ev.get("event", "")
-        step    = ev.get("step")
-        ts      = ev.get("ts", "")
-        payload = ev.get("payload") or {}
-
-        key = (event, step)
-        if key in seen and event in ("step.enter", "step.exit"):
-            continue
-        seen.add(key)
-
-        if event == "message.user":
-            preview = (payload.get("preview") or "message")[:48]
-            msgs.append({"from": "user", "to": "rose", "label": preview, "ts": ts})
-
-        elif event == "step.enter":
-            if step == "FP":
-                msgs.append({"from": "user", "to": "rose", "label": "feature prompt", "ts": ts})
-            elif step == "AF":
-                msgs.append({"from": "rose", "to": "rose", "label": "reading codebase", "ts": ts, "self": True})
-            elif step == "DR":
-                msgs.append({"from": "rose", "to": "rose-research", "label": "launch: deep research", "ts": ts})
-            elif step == "BI":
-                msgs.append({"from": "rose", "to": "rose-backlog", "label": "launch: backlog inspect", "ts": ts})
-
-        elif event == "step.exit":
-            if step == "DR":
-                msgs.append({"from": "rose-research", "to": "rose", "label": "research complete", "ts": ts})
-            elif step == "BI":
-                msgs.append({"from": "rose-backlog", "to": "rose", "label": "backlog complete", "ts": ts})
-
-        elif event == "message.agent":
-            preview = (payload.get("preview") or "response")[:48]
-            msgs.append({"from": "rose", "to": "user", "label": preview, "ts": ts})
-
-    return msgs
-
-
-def lifeline_row():
-    return " " * TS_W + "".join("│" + " " * (COL_W - 1) for _ in ACTORS)
-
-
-def fmt_msg_row(msg):
-    """Render a single sequence message as two lines: arrow row + lifeline row."""
-    n = len(ACTORS)
-    ts_str  = fmt_ts(msg["ts"])
-    from_id = msg["from"]
-    to_id   = msg["to"]
-    label   = msg["label"]
-    is_self = msg.get("self") or from_id == to_id
-
-    from_i = ACTOR_IDX.get(from_id, 0)
-    to_i   = ACTOR_IDX.get(to_id,   0)
-
-    row = list(" " * TS_W)
-    for i in range(n):
-        pos = TS_W + i * COL_W
-        while len(row) <= pos:
-            row.append(" ")
-        row[pos] = "│"
-        for k in range(1, COL_W):
-            p = pos + k
-            while len(row) <= p:
-                row.append(" ")
-            if row[p] == "│":
-                break
-            row[p] = " "
-
-    if is_self:
-        pos = TS_W + from_i * COL_W
-        annotation = f"[{label}]"
-        for j, ch in enumerate(annotation):
-            p = pos + 1 + j
-            while len(row) <= p:
-                row.append(" ")
-            row[p] = ch
+            project = None
+        worktree = git(cwd, "rev-parse", "--show-toplevel")
     else:
-        left_i  = min(from_i, to_i)
-        right_i = max(from_i, to_i)
-        going_right = from_i < to_i
-        left_pos  = TS_W + left_i  * COL_W
-        right_pos = TS_W + right_i * COL_W
+        project  = git(cwd, "rev-parse", "--show-toplevel")
+        worktree = None
 
-        for p in range(left_pos + 1, right_pos):
-            row[p] = "─"
-        if going_right:
-            row[left_pos]  = "├"
-            row[right_pos] = "▶"
-        else:
-            row[left_pos]  = "◀"
-            row[right_pos] = "┤"
-
-        label_pos = right_pos + 1
-        for j, ch in enumerate(f" {label}"):
-            p = label_pos + j
-            while len(row) <= p:
-                row.append(" ")
-            row[p] = ch
-
-    arrow_line = "".join(row)
-    return [f"{ts_str}  {arrow_line[TS_W:]}", lifeline_row()]
+    return {"project": project, "worktree": worktree}
 
 
-def fmt_sequence_header():
-    header = " " * TS_W + "".join(f"{a['label']:<{COL_W}}" for a in ACTORS)
-    return ["  SEQUENCE DIAGRAM", "  " + "─" * 56, "", header, lifeline_row()]
+# ── Native session storage ────────────────────────────────────────────────────
+
+def pid_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
 
 
-# ── main ──────────────────────────────────────────────────────────────────────
+def encode_cwd(cwd: str) -> str:
+    """Encode a cwd path to a Claude project directory name (/ → -)."""
+    return cwd.replace("/", "-")
 
-TERMINAL_STATUSES = {"completed", "interrupted", "abandoned"}
-POLL_INTERVAL = 0.5  # seconds
 
+def live_transcripts() -> dict[str, dict]:
+    """Return {transcript_stem: {pid, sessionId}} for all live processes.
 
-def main():
-    import time
-
-    session_id = resolve_session()
-    events_file = LOGS_DIR / session_id / "events.jsonl"
-    meta_file   = LOGS_DIR / session_id / "meta.json"
-
-    events, meta = load_session(session_id)
-    title   = meta.get("title") or session_id
-    started = fmt_ts(meta.get("started_at", ""))
-
-    W = 58
-    print()
-    print("  " + "━" * W)
-    print(f"  rose observe")
-    print(f"  {title}")
-    print(f"  {session_id[:36]}  ·  {started}")
-    print("  " + "━" * W)
-    print()
-
-    # Print header
-    for line in fmt_sequence_header():
-        print(line)
-
-    # Render historical events
-    seen_steps = set()
-    for ev in events:
-        key = (ev.get("event"), ev.get("step"))
-        if key[0] in ("step.enter", "step.exit"):
-            if key in seen_steps:
-                continue
-            seen_steps.add(key)
-        msgs = derive_messages([ev])
-        for msg in msgs:
-            for line in fmt_msg_row(msg):
-                print(line)
-
-    # Tail the file for new events
-    file_pos = events_file.stat().st_size if events_file.exists() else 0
-
-    while True:
-        time.sleep(POLL_INTERVAL)
-
-        # Check meta for terminal status — but only stop if no longer the active session
+    sessionId in sessions/{pid}.json is the process identity, NOT the transcript
+    filename — they diverge on resume. Instead we match by finding the transcript
+    in the project dir with mtime >= startedAt (ms).
+    """
+    result = {}
+    if not SESSIONS_DIR.exists():
+        return result
+    for f in SESSIONS_DIR.glob("*.json"):
         try:
-            current_meta = json.loads(meta_file.read_text())
-        except Exception:
-            current_meta = {}
-        try:
-            still_active = (LOGS_DIR / ".active-session").read_text().strip() == session_id
-        except Exception:
-            still_active = False
+            data       = json.loads(f.read_text())
+            pid        = data.get("pid")
+            sid        = data.get("sessionId")
+            cwd        = data.get("cwd", "")
+            started_ms = data.get("startedAt", 0)
+        except (json.JSONDecodeError, OSError):
+            continue
 
-        # Read new lines
-        if events_file.exists():
-            with open(events_file) as f:
-                f.seek(file_pos)
-                new_lines = f.readlines()
-                file_pos = f.tell()
+        if not pid or not cwd:
+            continue
+        if not pid_running(pid):
+            continue
 
-            for line in new_lines:
+        started_s   = started_ms / 1000
+        project_dir = PROJECTS_DIR / encode_cwd(cwd)
+        if not project_dir.exists():
+            continue
+
+        for transcript in project_dir.glob("*.jsonl"):
+            if transcript.stat().st_mtime >= started_s:
+                result[transcript.stem] = {"pid": pid, "sessionId": sid}
+                break
+
+    return result
+
+
+# ── Transcript reading ────────────────────────────────────────────────────────
+
+def strip_tags(text: str) -> str:
+    cleaned = re.sub(r"<[^>]+>[^<]*</[^>]+>", "", text)
+    cleaned = re.sub(r"<[^>]+/>", "", cleaned)
+    return cleaned.strip()
+
+
+def read_transcript(path: Path) -> dict:
+    """Extract cwd, branch, started_at, ended_at, title from a transcript."""
+    title      = None
+    branch     = None
+    cwd        = None
+    started_at = None
+    ended_at   = None
+
+    try:
+        with path.open() as f:
+            for line in f:
                 line = line.strip()
                 if not line:
                     continue
                 try:
-                    ev = json.loads(line)
+                    entry = json.loads(line)
                 except json.JSONDecodeError:
                     continue
 
-                key = (ev.get("event"), ev.get("step"))
-                if key[0] in ("step.enter", "step.exit"):
-                    if key in seen_steps:
-                        continue
-                    seen_steps.add(key)
+                ts = entry.get("timestamp")
+                if ts:
+                    if started_at is None:
+                        started_at = ts
+                    ended_at = ts
 
-                msgs = derive_messages([ev])
-                for msg in msgs:
-                    for row in fmt_msg_row(msg):
-                        print(row)
+                if entry.get("type") == "user" and entry.get("message", {}).get("role") == "user":
+                    if cwd is None:
+                        cwd = entry.get("cwd")
+                    if branch is None:
+                        branch = entry.get("gitBranch")
+                    if title is None:
+                        content = entry.get("message", {}).get("content", "")
+                        if isinstance(content, str):
+                            cleaned = strip_tags(content)
+                            if cleaned:
+                                title = cleaned
+    except OSError:
+        pass
 
-        if not still_active and current_meta.get("status") in TERMINAL_STATUSES:
-            ended = fmt_ts(current_meta.get("ended_at", ""))
-            print()
-            print(f"  ━━  {current_meta.get('status', 'done')}  ·  {ended}  " + "━" * (W - 24))
-            print()
-            break
+    return {
+        "cwd":        cwd,
+        "branch":     branch,
+        "started_at": started_at,
+        "ended_at":   ended_at,
+        "title":      title,
+        "size_kb":    round(path.stat().st_size / 1024, 1),
+    }
+
+
+# ── Session scanning ──────────────────────────────────────────────────────────
+
+def scan_sessions() -> list[dict]:
+    live     = live_transcripts()  # {transcript_stem: pid}
+    sessions = []
+
+    if not PROJECTS_DIR.exists():
+        return sessions
+
+    for project_dir in PROJECTS_DIR.iterdir():
+        if not project_dir.is_dir():
+            continue
+        for transcript in project_dir.glob("*.jsonl"):
+            session_id = transcript.stem
+            info       = read_transcript(transcript)
+            gi         = git_info(info["cwd"] or "")
+
+            if session_id in live:
+                status      = "live"
+                pid         = live[session_id]["pid"]
+                process_sid = live[session_id]["sessionId"]
+            else:
+                status      = "done"
+                pid         = None
+                process_sid = None
+
+            sessions.append({
+                "session_id":  session_id,
+                "process_sid": process_sid,
+                "pid":         pid,
+                "status":      status,
+                "project":    gi["project"],
+                "worktree":   gi["worktree"],
+                "branch":     info["branch"],
+                "started_at": info["started_at"],
+                "title":      info["title"],
+                "size_kb":    info["size_kb"],
+            })
+
+    sessions.sort(key=lambda s: s["started_at"] or "", reverse=True)
+    return sessions
+
+
+# ── Formatting ────────────────────────────────────────────────────────────────
+
+def fmt_dt(iso: str | None) -> str:
+    if not iso:
+        return "—"
+    try:
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone()
+        return dt.strftime("%d-%b-%Y %H:%M:%S").upper()
+    except Exception:
+        return iso[:19]
+
+
+def fmt_project(path: str | None) -> str:
+    if not path:
+        return f"{DIM}—{RESET}"
+    p = Path(path)
+    parent = str(p.parent) + "/"
+    name   = p.name
+    return f"{DIM}{parent}{RESET}{name}"
+
+
+def fmt_worktree(path: str | None) -> str:
+    if not path:
+        return f"{DIM}—{RESET}"
+    return Path(path).name
+
+
+SEP = f"  {DIM}{'─' * 72}{RESET}"
+
+
+def fmt_dot(status: str) -> str:
+    if status == "live":
+        return f"{BLINK}{GREEN}●{RESET}"
+    elif status == "unknown":
+        return f"{YELLOW}●{RESET}"
+    else:
+        return f"{DIM}○{RESET}"
+
+
+def list_sessions():
+    sessions = scan_sessions()
+
+    if not sessions:
+        print("\n  no sessions found\n")
+        return
+
+    print()
+    for s in sessions:
+        status   = s["status"]
+        sid      = f"{BOLD}{s['session_id'][:8]}{RESET}"
+        psid     = s.get("process_sid", "")
+        resumed  = f"{DIM}←{psid[:8]}{RESET}" if psid and psid != s["session_id"] else ""
+        pid      = f"{DIM}pid {s['pid']}{RESET}" if s["pid"] else ""
+        started  = fmt_dt(s["started_at"])
+        project  = fmt_project(s["project"])
+        worktree = s["worktree"] and f"worktree {fmt_worktree(s['worktree'])}"
+        branch   = f"⎇ {s['branch']}" if s["branch"] else None
+        title    = s["title"] or f"{DIM}no title{RESET}"
+        size     = f"{s['size_kb']} KB"
+
+        meta_parts = [p for p in [project, branch, worktree, f"{DIM}{started}{RESET}", f"{DIM}{size}{RESET}"] if p]
+        meta = f"  {DIM}·{RESET}  ".join(str(p) for p in meta_parts)
+
+        print(SEP)
+        header = "  ".join(filter(None, [sid, resumed, pid]))
+        print(f"  {fmt_dot(status)}  {header}")
+        print(f"  {title}")
+        print(f"  {meta}")
+        print()
+
+    print(SEP)
+    print()
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--list":
+        list_sessions()
+    else:
+        print(__doc__)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
