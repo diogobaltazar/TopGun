@@ -5,10 +5,12 @@ from pathlib import Path
 
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from watchfiles import awatch
 
 LOG_DIR = Path(os.environ.get("LOG_DIR", Path.home() / ".claude" / "logs"))
 CONFIG_FILE = Path(os.environ.get("ROSE_CONFIG", Path.home() / ".config" / "rose" / "config.json"))
+WEB_DIR = Path(__file__).parent.parent / "web"
 
 
 def _registered_projects() -> set[str] | None:
@@ -59,18 +61,25 @@ def _derive_current_step(events_file: Path) -> str | None:
 
 
 def _has_session_end(events_file: Path) -> bool:
-    """Return True if events.jsonl contains a session.end event."""
+    """Return True if the last parseable event in events.jsonl is session.end.
+
+    The Stop hook fires after every turn, so session.end may appear multiple
+    times. The session is only truly complete when session.end is the final event.
+    """
+    last_event = None
     try:
         with events_file.open() as f:
             for line in f:
+                line = line.strip()
+                if not line:
+                    continue
                 try:
-                    if json.loads(line.strip()).get("event") == "session.end":
-                        return True
+                    last_event = json.loads(line)
                 except (json.JSONDecodeError, AttributeError):
                     continue
     except OSError:
         pass
-    return False
+    return last_event is not None and last_event.get("event") == "session.end"
 
 
 def _load_session(session_dir: Path) -> dict | None:
@@ -145,7 +154,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
 @app.websocket("/ws/events/{session_id}")
-async def event_stream(websocket: WebSocket, session_id: str):
+async def event_stream(websocket: WebSocket, session_id: str):  # noqa: F811
     from fastapi import WebSocketDisconnect
     await websocket.accept()
     events_file = LOG_DIR / session_id / "events.jsonl"
@@ -187,3 +196,8 @@ async def event_stream(websocket: WebSocket, session_id: str):
         await watch_new_lines()
     except Exception:
         pass
+
+
+# Mount static files last so API routes take priority
+if WEB_DIR.exists():
+    app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="static")
