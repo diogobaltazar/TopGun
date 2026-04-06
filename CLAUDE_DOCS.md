@@ -218,7 +218,7 @@ Every subagent invocation is recorded in two places: the **parent transcript** (
 
 ---
 
-### `agent-{agentId}.meta.json`
+### `{session}/agent-{agentId}.meta.json`
 
 The human-readable label and purpose for this invocation:
 
@@ -234,7 +234,7 @@ The human-readable label and purpose for this invocation:
 
 ---
 
-### `agent-{agentId}.jsonl`
+### `{session}/agent-{agentId}.jsonl`
 
 The subagent's own full conversation transcript, in the same format as a parent session transcript (`user`, `assistant`, `progress` entries).
 
@@ -295,6 +295,30 @@ From this file we extract:
 | `size_kb` | file size on disk |
 | `tool_use_count` | count of `tool_use` blocks across all `assistant` entries |
 
+**Hook events inside the subagent (`progress`):**
+
+The subagent's `.jsonl` also contains `progress` entries — but these are **hook notifications for the subagent's own tool calls**, not streaming output. They are unrelated to the parent-transcript join.
+
+```json
+{
+  "type": "progress",
+  "agentId": "a69d496525515eb5e",
+  "sessionId": "78b85df3-9ce0-4d1d-a4ce-2d7459980b92",
+  "isSidechain": true,
+  "timestamp": "2026-04-06T12:06:31.537Z",
+  "toolUseID": "toolu_vrtx_019zxiz3j8zvkSjZLwvB9TTt",
+  "parentToolUseID": "toolu_vrtx_019zxiz3j8zvkSjZLwvB9TTt",
+  "data": {
+    "type": "hook_progress",
+    "hookEvent": "PreToolUse",
+    "hookName": "PreToolUse:WebFetch",
+    "command": "~/.claude/hooks/log-session-start.sh"
+  }
+}
+```
+
+`data.type: "hook_progress"` — this is the subagent's own PreToolUse hook firing before its WebFetch call. Not useful for lifecycle tracking.
+
 ---
 
 ### How agent lifecycle is recorded in the parent transcript
@@ -330,31 +354,39 @@ When Claude decides to invoke an agent, it writes an `assistant` entry with a `t
 
 `id` is the `tool_use_id` anchor — everything else joins on this.
 
-#### 2 — Agent running (`progress` entries)
+#### 2 — Agent running (`progress` entries in the **parent** transcript)
 
-While the agent works, a stream of `progress` entries arrives, all sharing the same `parentToolUseID`:
+While the agent works, `progress` entries with `data.type: "agent_progress"` stream into the **parent** transcript. These are distinct from the `hook_progress` entries in the subagent's own `.jsonl`.
 
 ```json
 {
   "type": "progress",
-  "timestamp": "2026-04-06T12:06:31.536Z",
-  "parentToolUseID": "toolu_vrtx_01CkwKbLK1PpkVbt6a9NSzmZ",
-  "toolUseID": "agent_msg_vrtx_01E17...",
   "isSidechain": false,
+  "timestamp": "2026-04-06T12:06:29.891Z",
+  "parentToolUseID": "toolu_vrtx_01CkwKbLK1PpkVbt6a9NSzmZ",
+  "toolUseID": "agent_msg_vrtx_01E17jvrb19jEjp7mEBXzTtc",
+  "sessionId": "78b85df3-9ce0-4d1d-a4ce-2d7459980b92",
   "data": {
     "type": "agent_progress",
     "agentId": "a69d496525515eb5e",
-    "prompt": "What are all the possible hooks...",
-    "message": { "..." : "..." }
+    "prompt": "What are all the possible hooks that Claude Code provides?...",
+    "message": {
+      "type": "user",
+      "message": { "role": "user", "content": [{ "type": "text", "text": "..." }] }
+    }
   }
 }
 ```
 
 Key observations:
-- `data.agentId` is the join key to the `subagents/` directory (filename `agent-{agentId}.*`)
-- `parentToolUseID` is the join key back to the `tool_use` block in the `assistant` entry
-- `agentName` is always `null` — the human-readable name is only in the `tool_use` input or `.meta.json`
-- There can be dozens of these per invocation — one per streamed chunk
+- `data.type: "agent_progress"` — distinguishes these from `hook_progress` entries
+- `data.agentId` — join key to `subagents/agent-{agentId}.*` files
+- `parentToolUseID` — join key back to the `tool_use.id` in the `assistant` entry (step 1)
+- `isSidechain: false` — these live in the main conversation, not the subagent's sidechain
+- `agentName` is always absent — the human-readable name is only in `.meta.json` or the `tool_use` input
+- There can be dozens per invocation — one per streamed chunk
+
+**Critical for status detection:** these entries only appear once the agent begins streaming output. In the brief window after the subagent file appears but before the first chunk arrives, no `agent_progress` entry exists yet — meaning the `agentId → tool_use_id` link cannot be established from the transcript alone.
 
 #### 3 — Agent finishes (`user` entry)
 
