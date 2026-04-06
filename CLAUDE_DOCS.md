@@ -531,9 +531,13 @@ If neither signal is available (old session, no hook log, no transcript link), t
 
 ### Why SubagentStop can be missed
 
-`SubagentStop` does not fire if the parent Claude Code process exits abruptly, or if the context limit is hit while an agent is mid-flight. This leaves an orphaned `SubagentStart` in the hook log, with no corresponding `SubagentStop`. If observed naïvely, such an agent appears live forever.
+`SubagentStop` does not fire in two known cases:
 
-The tool-result join is immune to this: it is written by Claude Code into the parent transcript, not by a hook, so it is reliable even when hooks fail to fire. This makes it the correct cross-check when the hook log says "live".
+1. **Abrupt process exit** — the parent Claude Code process is killed or crashes.
+2. **Context limit** — the context window fills while the agent is mid-flight.
+3. **Shutdown via messaging protocol** — when the agent exits via `shutdown_request` / `shutdown_approved` (the teammate messaging handshake), Claude Code does not treat this as a natural subagent lifecycle end, so `SubagentStop` never fires.
+
+The tool-result join is immune to cases 1 and 2: it is written by Claude Code into the parent transcript, not by a hook. But for case 3, neither the transcript nor the hook log has a completion signal.
 
 ### When the transcript has no link at all
 
@@ -548,14 +552,78 @@ SubagentStop fired for this agent_id?
 ├─ yes → done                                       (hook log — definitive)
 └─ no  → tool_result present in parent transcript?
           ├─ yes → done                             (transcript join — SubagentStop missed)
-          └─ no  → SubagentStart fired?
-                    ├─ yes → subagent .jsonl silent for >120s?
-                    │         ├─ yes → done         (orphaned Start — agent gone, file stale)
-                    │         └─ no  → live         (genuinely in progress)
-                    └─ no  → done                   (no signal — conservative default)
+          └─ no  → shutdown_request sent to this agent_type after it started?
+                    ├─ yes → done                   (messaging shutdown — SubagentStop won't fire)
+                    └─ no  → SubagentStart fired?
+                              ├─ yes → subagent .jsonl silent for >120s?
+                              │         ├─ yes → done   (orphaned Start — agent gone, file stale)
+                              │         └─ no  → live   (genuinely in progress)
+                              └─ no  → done             (no signal — conservative default)
 ```
 
 After computing `is_done`, status is clamped: a "live" agent in a dead session is still shown as "done".
+
+The shutdown_request signal comes from `~/.claude/logs/message-events.jsonl`, written by the `PostToolUse:SendMessage` hook (see below). The correlation key is `agent_type` (e.g. `"rose-backlog"`) matched against the `to` field of the message, gated by `started_at` timestamp so past invocations of the same agent type are not incorrectly marked done.
+
+---
+
+## PostToolUse:SendMessage Hook
+
+`SendMessage` is a tool call like any other, so `PreToolUse` and `PostToolUse` fire on it. This can be used to intercept teammate messages — in particular `shutdown_request` — which would otherwise leave no completion signal.
+
+Hook registration in `settings.json`:
+
+```json
+"PostToolUse": [
+  {
+    "matcher": "SendMessage",
+    "hooks": [
+      {
+        "type": "command",
+        "command": "HOOK_EVENT=PostToolUse:SendMessage ~/.claude/hooks/log-message-events.sh"
+      }
+    ]
+  }
+]
+```
+
+### Payload
+
+```json
+{
+  "session_id": "78b85df3-9ce0-4d1d-a4ce-2d7459980b92",
+  "transcript_path": "/Users/pereid22/.claude/projects/-Users-pereid22-rose/78b85df3-9ce0-4d1d-a4ce-2d7459980b92.jsonl",
+  "cwd": "/Users/pereid22/rose",
+  "permission_mode": "acceptEdits",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "SendMessage",
+  "tool_input": {
+    "to": "rose-backlog",
+    "message": { "type": "shutdown_request" },
+    "summary": "Shut down rose-backlog"
+  },
+  "tool_response": {
+    "success": true,
+    "message": "Shutdown request sent to rose-backlog. Request ID: ...",
+    "request_id": "shutdown-...@rose-backlog",
+    "target": "rose-backlog"
+  },
+  "tool_use_id": "toolu_vrtx_01..."
+}
+```
+
+Key fields:
+
+| Field | Notes |
+|---|---|
+| `tool_input.to` | Recipient agent name (e.g. `"rose-backlog"`) |
+| `tool_input.message` | The full message — a string for plain messages, a structured object for protocol messages |
+| `tool_input.message.type` | `"shutdown_request"`, `"shutdown_response"`, `"plan_approval_response"`, or absent for plain text |
+| `tool_response.success` | Whether the message was delivered |
+
+### What fires and what does not
+
+`PostToolUse:SendMessage` fires for **all** `SendMessage` calls in the session — from the lead and from in-process teammates. It does **not** distinguish which agent made the call; that must be inferred from context (e.g. the `to` field being the lead means a teammate sent it).
 
 ---
 

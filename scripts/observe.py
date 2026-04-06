@@ -20,6 +20,7 @@ from pathlib import Path
 PROJECTS_DIR    = Path.home() / ".claude" / "projects"
 SESSIONS_DIR    = Path.home() / ".claude" / "sessions"
 SUBAGENT_LOG    = Path.home() / ".claude" / "logs" / "subagent-events.jsonl"
+MESSAGE_LOG     = Path.home() / ".claude" / "logs" / "message-events.jsonl"
 
 DEBOUNCE_S = 0.15  # seconds after last event before redrawing
 
@@ -156,6 +157,40 @@ def read_subagent_hook_states() -> dict[str, str]:
     return states
 
 
+# ── Message hook log ─────────────────────────────────────────────────────────
+
+def read_shutdown_requests() -> dict[str, list[str]]:
+    """Return {agent_name: [timestamps]} of shutdown_requests sent via SendMessage.
+
+    When a shutdown_request is sent to an agent by name (e.g. "rose-backlog"),
+    SubagentStop may not fire (shutdown via messaging protocol, not natural exit).
+    This log lets us correlate agent_type → shutdown timestamp as a done signal.
+    """
+    shutdowns: dict[str, list[str]] = {}
+    if not MESSAGE_LOG.exists():
+        return shutdowns
+    try:
+        with MESSAGE_LOG.open() as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                payload = entry.get("payload", {})
+                msg = payload.get("tool_input", {}).get("message", {})
+                if not isinstance(msg, dict) or msg.get("type") != "shutdown_request":
+                    continue
+                to = payload.get("tool_input", {}).get("to", "")
+                if to:
+                    shutdowns.setdefault(to, []).append(entry.get("ts", ""))
+    except OSError:
+        pass
+    return shutdowns
+
+
 # ── Transcript reading ────────────────────────────────────────────────────────
 
 def strip_tags(text: str) -> str:
@@ -236,7 +271,7 @@ def read_transcript(path: Path) -> dict:
     }
 
 
-def read_subagents(session_dir: Path, agent_tool_use: dict, completed_tool_uses: set, session_live: bool, hook_states: dict[str, str] | None = None) -> list[dict]:
+def read_subagents(session_dir: Path, agent_tool_use: dict, completed_tool_uses: set, session_live: bool, hook_states: dict[str, str] | None = None, shutdown_requests: dict[str, list[str]] | None = None) -> list[dict]:
     """Read subagent metadata and transcripts from {session_dir}/subagents/."""
     subagents_dir = session_dir / "subagents"
     if not subagents_dir.exists():
@@ -299,11 +334,21 @@ def read_subagents(session_dir: Path, agent_tool_use: dict, completed_tool_uses:
 
         stale = jsonl_mtime is not None and (time.time() - jsonl_mtime) > 120
 
+        # shutdown_request sent to this agent_type after it started → done
+        shutdown_sent = False
+        if shutdown_requests and started_at:
+            for ts in shutdown_requests.get(agent_type, []):
+                if ts >= started_at:
+                    shutdown_sent = True
+                    break
+
         if hook_states and agent_id in hook_states:
             if hook_states[agent_id] == "done":
                 is_done = True                   # SubagentStop fired
             elif tool_result_done:
                 is_done = True                   # SubagentStop missed; tool_result is ground truth
+            elif shutdown_sent:
+                is_done = True                   # shutdown_request sent; SubagentStop won't fire
             elif stale:
                 is_done = True                   # orphaned Start + silent file — agent is gone
             else:
@@ -332,10 +377,11 @@ def read_subagents(session_dir: Path, agent_tool_use: dict, completed_tool_uses:
 # ── Session scanning ──────────────────────────────────────────────────────────
 
 def scan_sessions() -> list[dict]:
-    live         = live_transcripts()
-    hook_states  = read_subagent_hook_states()
-    sessions     = []
-    matched_pids = set()
+    live              = live_transcripts()
+    hook_states       = read_subagent_hook_states()
+    shutdown_requests = read_shutdown_requests()
+    sessions          = []
+    matched_pids      = set()
 
     if PROJECTS_DIR.exists():
         for project_dir in PROJECTS_DIR.iterdir():
@@ -363,6 +409,7 @@ def scan_sessions() -> list[dict]:
                     info["completed_tool_uses"],
                     status == "live",
                     hook_states,
+                    shutdown_requests,
                 )
                 sessions.append({
                     "session_id":  session_id,
@@ -625,7 +672,7 @@ def watch_sessions():
     observer = Observer()
     handler  = Handler()
 
-    logs_dir = SUBAGENT_LOG.parent
+    logs_dir = SUBAGENT_LOG.parent  # same dir as MESSAGE_LOG
     for watch_dir in (SESSIONS_DIR, PROJECTS_DIR, logs_dir):
         watch_dir.mkdir(parents=True, exist_ok=True)
         observer.schedule(handler, str(watch_dir), recursive=True)
