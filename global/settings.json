@@ -8,7 +8,30 @@
   "permissions": {
     "allow": [
       "Bash(docker compose:*)",
-      "Bash(docker exec:*)"
+      "Bash(docker exec:*)",
+      "Bash(~/.claude/hooks/log-subagent-events.sh*)"
+    ]
+  },
+  "hooks": {
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "HOOK_EVENT=SubagentStart ~/.claude/hooks/log-subagent-events.sh"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "HOOK_EVENT=SubagentStop ~/.claude/hooks/log-subagent-events.sh"
+          }
+        ]
+      }
     ]
   }
 }
