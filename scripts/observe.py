@@ -401,8 +401,9 @@ def main():
                         print(row)
 
         if not still_active and current_meta.get("status") in TERMINAL_STATUSES:
+            ended = fmt_ts(current_meta.get("ended_at", ""))
             print()
-            print(f"  ━━  {current_meta.get('status', 'done')}  " + "━" * (W - 12))
+            print(f"  ━━  {current_meta.get('status', 'done')}  ·  {ended}  " + "━" * (W - 24))
             print()
             break
 
