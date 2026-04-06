@@ -89,4 +89,4 @@ Send the final report to rose with the branch name and issue details:
 SendMessage(to: "rose", message: "BACKLOG COMPLETE\n\n**Issue**: #<number> — <title>\n**Branch**: feat/<number>-<slug>\n**Action taken**: Created new issue | Edited #N")
 ```
 
-If `gh` is unavailable, skip phases 2–4 and send the inspection report only (Phase 1 results), noting that issue management was not possible.
+If `gh` is unavailable or returns no issues, send the inspection report to rose with a note that issue management was not possible, then stop. Do not attempt any implementation.
