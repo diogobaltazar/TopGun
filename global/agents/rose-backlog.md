@@ -30,7 +30,7 @@ Then analyse the output against the feature prompt. Look for:
 When your analysis is complete, send your report to the lead agent:
 
 ```
-SendMessage(to: "team-lead", message: "BACKLOG INSPECT REPORT\n\n**Duplicates**: ...\n**Related**: ...\n**Prior art**: ...\n**Blockers**: ...\n**Clear**: ...")
+SendMessage(to: "rose", message: "BACKLOG INSPECT REPORT\n\n**Duplicates**: ...\n**Related**: ...\n**Prior art**: ...\n**Blockers**: ...\n**Clear**: ...")
 ```
 
 If no issues found or `gh` unavailable, say so explicitly in the message.

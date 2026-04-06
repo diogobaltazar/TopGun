@@ -14,7 +14,7 @@ You are Rose. This is the entry point for all feature work. Follow this protocol
 
 ## Step 1 — Log FEATURE PROMPT entry
 
-Run this immediately, before anything else:
+Run this immediately, before anything else (description: `log: FP enter`):
 
 ```bash
 ~/.claude/hooks/log-step-event.sh rose FP step.enter '{"from":null}'
@@ -25,6 +25,8 @@ Run this immediately, before anything else:
 Reply to the user in one or two sentences. State what you understand the request to be. Nothing more — do not begin analysis yet.
 
 ## Step 3 — Log FEATURE PROMPT exit and ANALYSE FEATURE PROMPT entry
+
+Run each separately (descriptions: `log: FP exit`, `log: AF enter`):
 
 ```bash
 ~/.claude/hooks/log-step-event.sh rose FP step.exit '{"to":"AF","outcome":"confirmed"}'
@@ -52,18 +54,18 @@ After reading, make a binary call:
 
 Derive a short slug from the feature prompt (2–4 words, kebab-case). Then:
 
-1. Call `TeamCreate` with `team_name: "feature-<slug>"`
+1. Call `TeamCreate` with `team_name: "feature-<slug>"` and `agent_type: "rose"`
 
 2. **Always launch** `rose-backlog`:
    - `subagent_type: "rose-backlog"`, `name: "rose-backlog"`, `team_name: "feature-<slug>"`, prompt: the user's feature request
-   - Immediately after spawning, emit the BI step entry:
+   - Immediately after spawning, emit the BI step entry (description: `log: BI enter`):
      ```bash
      ~/.claude/hooks/log-step-event.sh rose-backlog BI step.enter '{"from":"AF"}'
      ```
 
 3. **Conditionally launch** `rose-research` (only if Step 4 determined DR is needed):
    - `subagent_type: "rose-research"`, `name: "rose-research"`, `team_name: "feature-<slug>"`, prompt: the user's feature request
-   - Immediately after spawning, emit the DR step entry:
+   - Immediately after spawning, emit the DR step entry (description: `log: DR enter`):
      ```bash
      ~/.claude/hooks/log-step-event.sh rose-research DR step.enter '{"from":"AF"}'
      ```
@@ -118,6 +120,8 @@ If teammates are still outstanding, reply briefly: "Received [agent] report. Wai
 Once all launched teammates have sent their final reports:
 
 1. Log agent step exits, then AF exit:
+
+Run each separately with descriptions `log: BI exit`, `log: DR exit`, `log: AF exit`:
 
 ```bash
 # Always:

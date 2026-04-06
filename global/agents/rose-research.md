@@ -47,7 +47,7 @@ Once you have the Gemini results (or if no external research was needed), synthe
 When your synthesis is complete, send your report to the lead agent:
 
 ```
-SendMessage(to: "team-lead", message: "DEEP RESEARCH REPORT\n\n**Technologies**: ...\n**Patterns**: ...\n**Codebase fit**: ...\n**Key insight**: ...")
+SendMessage(to: "rose", message: "DEEP RESEARCH REPORT\n\n**Technologies**: ...\n**Patterns**: ...\n**Codebase fit**: ...\n**Key insight**: ...")
 ```
 
 Be concise. Bullet points preferred. No padding.
