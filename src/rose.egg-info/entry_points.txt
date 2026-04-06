@@ -1,0 +1,2 @@
+[console_scripts]
+rose = rose.cli:app

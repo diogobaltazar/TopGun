@@ -1,0 +1,15 @@
+README.md
+pyproject.toml
+src/rose/__init__.py
+src/rose.egg-info/PKG-INFO
+src/rose.egg-info/SOURCES.txt
+src/rose.egg-info/dependency_links.txt
+src/rose.egg-info/entry_points.txt
+src/rose.egg-info/requires.txt
+src/rose.egg-info/top_level.txt
+src/rose/api/main.py
+src/rose/cli/__init__.py
+src/rose/cli/config.py
+src/rose/cli/install.py
+src/rose/cli/observe.py
+src/rose/cli/uninstall.py
