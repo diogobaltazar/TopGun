@@ -72,7 +72,17 @@ def resolve_session():
     sys.exit(1)
 
 
+GREEN  = "\033[32m"
+RESET  = "\033[0m"
+
+
 def list_sessions():
+    active_id = ""
+    try:
+        active_id = (LOGS_DIR / ".active-session").read_text().strip()
+    except Exception:
+        pass
+
     dirs = sorted(
         [d for d in LOGS_DIR.iterdir() if d.is_dir() and (d / "meta.json").exists()],
         key=lambda d: d.stat().st_mtime,
@@ -84,11 +94,15 @@ def list_sessions():
             meta = json.loads((d / "meta.json").read_text())
         except Exception:
             meta = {}
-        title = meta.get("title") or d.name[:20]
+        title  = meta.get("title") or ""
         status = meta.get("status", "?")
-        ts = fmt_ts(meta.get("started_at", ""))
-        active_marker = " ◀" if d.name == (LOGS_DIR / ".active-session").read_text().strip() else ""
-        print(f"  {d.name[:8]}…  {status:<12}  {ts}  {title[:40]}{active_marker}")
+        ts     = fmt_ts(meta.get("started_at", ""))
+        is_active = d.name == active_id
+        line = f"  {d.name}  {status:<12}  {ts}  {title[:40]}"
+        if is_active:
+            print(f"{GREEN}{line}{RESET}")
+        else:
+            print(line)
     print()
 
 
