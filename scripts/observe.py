@@ -607,7 +607,6 @@ def render_sessions() -> "Text":
             meta_parts.append((f"worktree {Path(worktree).name}", STYLE_NEON_DIM))
 
         meta_parts.append((started, STYLE_DIM))
-        meta_parts.append((size,    STYLE_DIM))
 
         out.append("  ")
         dot_sep = ("  ·  ", STYLE_DIM)
@@ -615,6 +614,16 @@ def render_sessions() -> "Text":
             if i > 0:
                 out.append(*dot_sep)
             out.append(text, style=style)
+
+        # session KB — with delta highlight
+        out.append(*dot_sep)
+        if s["size_kb"] is not None:
+            t, st, arrow, as_ = _fmt_delta(size, session_id + ":kb", s["size_kb"])
+            out.append(t, style=st)
+            if arrow:
+                out.append(arrow, style=as_)
+        else:
+            out.append(size, style=STYLE_DIM)
 
         out.append("\n")
 
