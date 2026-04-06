@@ -100,7 +100,14 @@ def list_sessions():
         ended  = fmt_ts(meta.get("ended_at", ""))
         is_active = d.name == active_id
         display_status = "active" if is_active else status
-        time_range = ts + (f" → {ended}" if not is_active and ended.strip() else "")
+        if is_active:
+            time_range = ts
+        elif ts.strip() and ended.strip():
+            time_range = f"{ts} → {ended}"
+        elif ended.strip():
+            time_range = f"→ {ended}"
+        else:
+            time_range = ts
         line = f"  {d.name}  {display_status:<12}  {time_range}  {title[:40]}"
         if is_active:
             print(f"{GREEN}{line}{RESET}")
