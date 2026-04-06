@@ -236,7 +236,9 @@ The human-readable label and purpose for this invocation:
 
 ### `agent-{agentId}.jsonl`
 
-The subagent's own full conversation transcript, in the same format as a parent session transcript (`user`, `assistant`, `progress` entries). Key fields:
+The subagent's own full conversation transcript, in the same format as a parent session transcript (`user`, `assistant`, `progress` entries).
+
+**First entry — the prompt (`user`):**
 
 ```json
 {
@@ -253,7 +255,37 @@ The subagent's own full conversation transcript, in the same format as a parent 
 }
 ```
 
-Note `isSidechain: true` — this marks all subagent entries as belonging to a sidechain, not the main conversation. `sessionId` is the **parent** session's ID.
+`isSidechain: true` marks all subagent entries as belonging to a sidechain, not the main conversation. `sessionId` is the **parent** session's ID. The `timestamp` of this first entry is the agent's `started_at`.
+
+**Tool call inside the subagent (`assistant`):**
+
+```json
+{
+  "type": "assistant",
+  "agentId": "a69d496525515eb5e",
+  "sessionId": "78b85df3-9ce0-4d1d-a4ce-2d7459980b92",
+  "isSidechain": true,
+  "timestamp": "2026-04-06T12:06:31.535Z",
+  "message": {
+    "model": "claude-haiku-4-5-20251001",
+    "role": "assistant",
+    "stop_reason": "tool_use",
+    "content": [
+      {
+        "type": "tool_use",
+        "id": "toolu_vrtx_019zxiz3j8zvkSjZLwvB9TTt",
+        "name": "WebFetch",
+        "input": {
+          "url": "https://...",
+          "prompt": "List of all available hooks in Claude Code"
+        }
+      }
+    ]
+  }
+}
+```
+
+Each `tool_use` block in `assistant` entries counts toward `tool_use_count`. Note the subagent runs on `claude-haiku` by default, not the parent model.
 
 From this file we extract:
 
