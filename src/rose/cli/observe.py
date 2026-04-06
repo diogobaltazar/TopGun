@@ -22,26 +22,28 @@ SESSIONS_DIR    = Path.home() / ".claude" / "sessions"
 TEAMS_DIR       = Path.home() / ".claude" / "teams"
 SUBAGENT_LOG    = Path.home() / ".claude" / "logs" / "subagent-events.jsonl"
 MESSAGE_LOG     = Path.home() / ".claude" / "logs" / "message-events.jsonl"
+OBSERVE_CONFIG  = Path.home() / ".claude" / "observe-config.json"
 
-DEBOUNCE_S      = 0.15  # seconds after last event before redrawing
-HIGHLIGHT_TTL   = 2.0   # seconds a changed-value highlight stays lit
+DEBOUNCE_S      = 0.15   # seconds after last event before redrawing
+HIGHLIGHT_TTL   = 2.0    # seconds a changed-value highlight stays lit
 
-# ── Rich styles (Matrix palette) ──────────────────────────────────────────────
-STYLE_NEON     = "bold color(118)"   # session ID / live dot — bright neon green
-STYLE_NEON_DIM = "color(28)"         # branch / worktree     — deep matrix green
-STYLE_PEARL    = "color(253)"        # title                 — pearl white
-STYLE_SILVER   = "color(245)"        # resumed ←             — silver
-STYLE_DIM      = "dim"               # dates, sizes, project parent
+# ── Rich styles ────────────────────────────────────────────────────────────────
+STYLE_NEON     = "bold color(118)"   # live dot / session ID
+STYLE_NEON_DIM = "color(28)"         # branch / worktree / agent name
+STYLE_PEARL    = "color(253)"        # feature one-liner
+STYLE_SILVER   = "color(245)"        # ← resume arrow
+STYLE_DIM      = "dim"               # labels, dates, secondary info
 STYLE_BOLD     = "bold"              # project name
-STYLE_DELTA    = "color(39)"         # value-increased highlight — electric blue
+STYLE_KEY      = "color(245)"        # header key column
+STYLE_VAL      = "color(253)"        # header value column
+STYLE_DELTA    = "color(39)"         # value-increased highlight
 
-# ── Value-change highlight state ─────────────────────────────────────────────
-_prev_metrics:      dict[str, float] = {}
-_highlight_until:   dict[str, float] = {}
+# ── Value-change highlight state ──────────────────────────────────────────────
+_prev_metrics:    dict[str, float] = {}
+_highlight_until: dict[str, float] = {}
 
 
 def _check_delta(key: str, value: float) -> bool:
-    """Return True if value increased since last call; update state."""
     now  = time.time()
     prev = _prev_metrics.get(key)
     _prev_metrics[key] = value
@@ -51,13 +53,46 @@ def _check_delta(key: str, value: float) -> bool:
 
 
 def _fmt_delta(text: str, key: str, value: float) -> tuple[str, str, str | None, str | None]:
-    """Return (text, style, arrow, arrow_style) for a metric field."""
     if _check_delta(key, value):
         return text, STYLE_DELTA, " ↑", STYLE_DELTA
     return text, STYLE_DIM, None, None
 
 
-# ── Git helpers ───────────────────────────────────────────────────────────────
+# ── Config / pricing ──────────────────────────────────────────────────────────
+
+_pricing_cache: tuple | None = None
+
+
+def _load_pricing() -> tuple[dict, dict]:
+    global _pricing_cache
+    if _pricing_cache is not None:
+        return _pricing_cache
+    try:
+        cfg = json.loads(OBSERVE_CONFIG.read_text())
+    except (OSError, json.JSONDecodeError):
+        cfg = {}
+    mp = cfg.get("model_pricing", {})
+    fp = cfg.get("fallback_pricing", {"input": 3.0, "output": 15.0, "cache_write": 3.75, "cache_read": 0.30})
+    _pricing_cache = (mp, fp)
+    return _pricing_cache
+
+
+def _usd_for_usage(usage: dict, model: str | None) -> float:
+    mp, fp = _load_pricing()
+    rates  = mp.get(model or "", fp)
+    inp    = usage.get("input_tokens", 0)
+    out    = usage.get("output_tokens", 0)
+    cw     = usage.get("cache_creation_input_tokens", 0)
+    cr     = usage.get("cache_read_input_tokens", 0)
+    return (
+        inp * rates["input"]       / 1_000_000 +
+        out * rates["output"]      / 1_000_000 +
+        cw  * rates["cache_write"] / 1_000_000 +
+        cr  * rates["cache_read"]  / 1_000_000
+    )
+
+
+# ── Git helpers ────────────────────────────────────────────────────────────────
 
 def git(cwd: str, *args) -> str | None:
     try:
@@ -71,31 +106,80 @@ def git(cwd: str, *args) -> str | None:
 
 
 def git_info(cwd: str) -> dict:
-    """Return project root and worktree path for a given cwd."""
     if not cwd or not Path(cwd).exists():
         return {"project": None, "worktree": None}
-
     git_dir = git(cwd, "rev-parse", "--git-dir")
     if not git_dir:
         return {"project": None, "worktree": None}
-
     is_worktree = "/.git/worktrees/" in git_dir or git_dir.endswith("/worktrees")
-
     if is_worktree:
         common_dir = git(cwd, "rev-parse", "--git-common-dir")
-        if common_dir:
-            project = str(Path(common_dir).resolve().parent)
-        else:
-            project = None
-        worktree = git(cwd, "rev-parse", "--show-toplevel")
+        project    = str(Path(common_dir).resolve().parent) if common_dir else None
+        worktree   = git(cwd, "rev-parse", "--show-toplevel")
     else:
         project  = git(cwd, "rev-parse", "--show-toplevel")
         worktree = None
-
     return {"project": project, "worktree": worktree}
 
 
-# ── Native session storage ────────────────────────────────────────────────────
+# ── Formatting helpers ─────────────────────────────────────────────────────────
+
+def fmt_dt(iso: str | None) -> str:
+    if not iso:
+        return "—"
+    try:
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone()
+        return dt.strftime("%d-%b-%Y %H:%M:%S").upper()
+    except Exception:
+        return iso[:19]
+
+
+def fmt_size(kb: float | None) -> str:
+    if kb is None:
+        return "—"
+    if kb >= 1024:
+        return f"{kb / 1024:.1f} MB"
+    return f"{kb:.1f} KB"
+
+
+def fmt_duration(seconds: float | None) -> str:
+    if seconds is None or seconds < 0:
+        return "—"
+    s = int(seconds)
+    h, rem = divmod(s, 3600)
+    m, s   = divmod(rem, 60)
+    if h:
+        return f"{h}h {m:02d}m {s:02d}s"
+    if m:
+        return f"{m}m {s:02d}s"
+    return f"{s}s"
+
+
+def fmt_tokens(n: int | None) -> str:
+    if n is None:
+        return "—"
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}K"
+    return str(n)
+
+
+def fmt_usd(usd: float | None) -> str:
+    if usd is None:
+        return "—"
+    if usd < 0.01:
+        return f"${usd:.4f}"
+    return f"${usd:.3f}"
+
+
+def strip_tags(text: str) -> str:
+    cleaned = re.sub(r"<[^>]+>[^<]*</[^>]+>", "", text)
+    cleaned = re.sub(r"<[^>]+/>", "", cleaned)
+    return cleaned.strip()
+
+
+# ── Native session storage ─────────────────────────────────────────────────────
 
 def pid_running(pid: int) -> bool:
     try:
@@ -110,7 +194,6 @@ def encode_cwd(cwd: str) -> str:
 
 
 def live_transcripts() -> dict[str, dict]:
-    """Return {transcript_stem: {pid, sessionId}} for all live processes."""
     result = {}
     if not SESSIONS_DIR.exists():
         return result
@@ -123,29 +206,22 @@ def live_transcripts() -> dict[str, dict]:
             started_ms = data.get("startedAt", 0)
         except (json.JSONDecodeError, OSError):
             continue
-
-        if not pid or not cwd:
+        if not pid or not cwd or not pid_running(pid):
             continue
-        if not pid_running(pid):
-            continue
-
         started_s   = started_ms / 1000
         project_dir = PROJECTS_DIR / encode_cwd(cwd)
         if not project_dir.exists():
             continue
-
         for transcript in project_dir.glob("*.jsonl"):
             if transcript.stat().st_mtime >= started_s:
                 result[transcript.stem] = {"pid": pid, "sessionId": sid}
                 break
-
     return result
 
 
-# ── Team config ───────────────────────────────────────────────────────────────
+# ── Team config ────────────────────────────────────────────────────────────────
 
-def read_team_lead(session_id: str) -> str | None:
-    """Return the lead agent_type if session_id is currently leading a team."""
+def read_team_config(session_id: str) -> dict | None:
     if not TEAMS_DIR.exists():
         return None
     for team_dir in TEAMS_DIR.iterdir():
@@ -156,19 +232,31 @@ def read_team_lead(session_id: str) -> str | None:
             data = json.loads(config.read_text())
         except (json.JSONDecodeError, OSError):
             continue
-        if data.get("leadSessionId") != session_id:
-            continue
-        lead_id = data.get("leadAgentId")
-        for member in data.get("members", []):
-            if member.get("agentId") == lead_id:
-                return member.get("agentType")
+        if data.get("leadSessionId") == session_id:
+            return data
     return None
 
 
-# ── Subagent hook log ────────────────────────────────────────────────────────
+def team_member_agent_ids(team_config: dict) -> set[str]:
+    lead_id = team_config.get("leadAgentId", "")
+    return {
+        m["agentId"]
+        for m in team_config.get("members", [])
+        if m.get("agentId") != lead_id
+    }
+
+
+def team_lead_type(team_config: dict) -> str | None:
+    lead_id = team_config.get("leadAgentId", "")
+    for m in team_config.get("members", []):
+        if m.get("agentId") == lead_id:
+            return m.get("agentType")
+    return None
+
+
+# ── Hook logs ──────────────────────────────────────────────────────────────────
 
 def read_subagent_hook_states() -> dict[str, str]:
-    """Return {agent_id: "live"|"done"} from SubagentStart/SubagentStop hook log."""
     states: dict[str, str] = {}
     if not SUBAGENT_LOG.exists():
         return states
@@ -196,10 +284,7 @@ def read_subagent_hook_states() -> dict[str, str]:
     return states
 
 
-# ── Message hook log ─────────────────────────────────────────────────────────
-
 def read_shutdown_requests() -> dict[str, list[str]]:
-    """Return {agent_name: [timestamps]} of shutdown_requests sent via SendMessage."""
     shutdowns: dict[str, list[str]] = {}
     if not MESSAGE_LOG.exists():
         return shutdowns
@@ -225,22 +310,37 @@ def read_shutdown_requests() -> dict[str, list[str]]:
     return shutdowns
 
 
-# ── Transcript reading ────────────────────────────────────────────────────────
+# ── Transcript reading ─────────────────────────────────────────────────────────
 
-def strip_tags(text: str) -> str:
-    cleaned = re.sub(r"<[^>]+>[^<]*</[^>]+>", "", text)
-    cleaned = re.sub(r"<[^>]+/>", "", cleaned)
-    return cleaned.strip()
+def _accumulate_usage(entry: dict, totals: dict) -> None:
+    msg   = entry.get("message", {})
+    usage = msg.get("usage")
+    if not usage:
+        return
+    model = msg.get("model") or entry.get("model")
+    if model == "<synthetic>":
+        model = None
+    totals["input"]       += usage.get("input_tokens", 0)
+    totals["output"]      += usage.get("output_tokens", 0)
+    totals["cache_write"] += usage.get("cache_creation_input_tokens", 0)
+    totals["cache_read"]  += usage.get("cache_read_input_tokens", 0)
+    totals["usd"]         += _usd_for_usage(usage, model)
+
+
+def _empty_usage() -> dict:
+    return {"input": 0, "output": 0, "cache_write": 0, "cache_read": 0, "usd": 0.0}
 
 
 def read_transcript(path: Path) -> dict:
-    title      = None
-    branch     = None
-    cwd        = None
-    started_at = None
-    ended_at   = None
-    agent_tool_use: dict[str, str] = {}
-    completed_tool_uses: set[str] = set()
+    title        = None
+    branch       = None
+    cwd          = None
+    started_at   = None
+    ended_at     = None
+    tool_count   = 0
+    usage        = _empty_usage()
+    agent_tool_use:      dict[str, str] = {}
+    completed_tool_uses: set[str]       = set()
 
     try:
         with path.open() as f:
@@ -261,22 +361,33 @@ def read_transcript(path: Path) -> dict:
 
                 etype = entry.get("type")
 
-                if etype == "user" and entry.get("message", {}).get("role") == "user":
-                    if cwd is None:
-                        cwd = entry.get("cwd")
-                    if branch is None:
-                        branch = entry.get("gitBranch")
-                    if title is None:
-                        content = entry.get("message", {}).get("content", "")
-                        if isinstance(content, str):
-                            cleaned = strip_tags(content)
-                            if cleaned:
-                                title = cleaned
+                if etype == "user":
+                    msg = entry.get("message", {})
+                    if msg.get("role") == "user":
+                        if cwd is None:
+                            cwd = entry.get("cwd")
+                        if branch is None:
+                            branch = entry.get("gitBranch")
+                        if title is None:
+                            content = msg.get("content", "")
+                            if isinstance(content, str):
+                                cleaned = strip_tags(content)
+                                if cleaned:
+                                    title = cleaned
+                        content = msg.get("content", [])
+                        if isinstance(content, list):
+                            for block in content:
+                                if isinstance(block, dict) and block.get("type") == "tool_result":
+                                    completed_tool_uses.add(block.get("tool_use_id", ""))
+
+                elif etype == "assistant":
                     content = entry.get("message", {}).get("content", [])
                     if isinstance(content, list):
-                        for block in content:
-                            if isinstance(block, dict) and block.get("type") == "tool_result":
-                                completed_tool_uses.add(block.get("tool_use_id", ""))
+                        tool_count += sum(
+                            1 for b in content
+                            if isinstance(b, dict) and b.get("type") == "tool_use"
+                        )
+                    _accumulate_usage(entry, usage)
 
                 elif etype == "progress":
                     data = entry.get("data", {})
@@ -289,20 +400,31 @@ def read_transcript(path: Path) -> dict:
     except OSError:
         pass
 
+    total_tokens = usage["input"] + usage["output"] + usage["cache_write"] + usage["cache_read"]
+
     return {
-        "cwd":               cwd,
-        "branch":            branch,
-        "started_at":        started_at,
-        "ended_at":          ended_at,
-        "title":             title,
-        "size_kb":           round(path.stat().st_size / 1024, 1),
-        "agent_tool_use":    agent_tool_use,
+        "cwd":                cwd,
+        "branch":             branch,
+        "started_at":         started_at,
+        "ended_at":           ended_at,
+        "title":              title,
+        "size_kb":            round(path.stat().st_size / 1024, 1),
+        "tool_count":         tool_count,
+        "tokens":             total_tokens,
+        "usd":                usage["usd"],
+        "agent_tool_use":     agent_tool_use,
         "completed_tool_uses": completed_tool_uses,
     }
 
 
-def read_subagents(session_dir: Path, agent_tool_use: dict, completed_tool_uses: set, session_live: bool, hook_states: dict[str, str] | None = None, shutdown_requests: dict[str, list[str]] | None = None) -> list[dict]:
-    """Read subagent metadata and transcripts from {session_dir}/subagents/."""
+def read_subagents(
+    session_dir: Path,
+    agent_tool_use: dict,
+    completed_tool_uses: set,
+    session_live: bool,
+    hook_states: dict[str, str] | None = None,
+    shutdown_requests: dict[str, list[str]] | None = None,
+) -> list[dict]:
     subagents_dir = session_dir / "subagents"
     if not subagents_dir.exists():
         return []
@@ -310,7 +432,6 @@ def read_subagents(session_dir: Path, agent_tool_use: dict, completed_tool_uses:
     agents = []
     for meta_file in subagents_dir.glob("agent-*.meta.json"):
         agent_id = meta_file.name.removeprefix("agent-").removesuffix(".meta.json")
-
         try:
             meta = json.loads(meta_file.read_text())
         except (json.JSONDecodeError, OSError):
@@ -319,16 +440,18 @@ def read_subagents(session_dir: Path, agent_tool_use: dict, completed_tool_uses:
         agent_type  = meta.get("agentType", "unknown")
         description = meta.get("description", "")
 
-        jsonl_file  = subagents_dir / f"agent-{agent_id}.jsonl"
-        started_at  = None
-        tool_use_count = 0
-        size_kb     = None
+        jsonl_file   = subagents_dir / f"agent-{agent_id}.jsonl"
+        started_at   = None
+        ended_at     = None
+        tool_count   = 0
+        size_kb      = None
+        agent_cwd    = None
+        jsonl_mtime  = None
+        usage        = _empty_usage()
 
-        agent_cwd   = None
-        jsonl_mtime = None
         if jsonl_file.exists():
-            st      = jsonl_file.stat()
-            size_kb = round(st.st_size / 1024, 1)
+            st          = jsonl_file.stat()
+            size_kb     = round(st.st_size / 1024, 1)
             jsonl_mtime = st.st_mtime
             try:
                 with jsonl_file.open() as f:
@@ -340,27 +463,30 @@ def read_subagents(session_dir: Path, agent_tool_use: dict, completed_tool_uses:
                             entry = json.loads(line)
                         except json.JSONDecodeError:
                             continue
-                        if started_at is None:
-                            started_at = entry.get("timestamp")
+                        ts = entry.get("timestamp")
+                        if ts:
+                            if started_at is None:
+                                started_at = ts
+                            ended_at = ts
                         if agent_cwd is None and entry.get("type") == "user":
                             agent_cwd = entry.get("cwd")
                         if entry.get("type") == "assistant":
                             content = entry.get("message", {}).get("content", [])
                             if isinstance(content, list):
-                                tool_use_count += sum(
+                                tool_count += sum(
                                     1 for b in content
                                     if isinstance(b, dict) and b.get("type") == "tool_use"
                                 )
+                            _accumulate_usage(entry, usage)
             except OSError:
                 pass
 
-        agent_branch  = git(agent_cwd, "rev-parse", "--abbrev-ref", "HEAD") if agent_cwd else None
-        agent_gi      = git_info(agent_cwd) if agent_cwd else {"project": None, "worktree": None}
+        agent_branch = git(agent_cwd, "rev-parse", "--abbrev-ref", "HEAD") if agent_cwd else None
+        agent_gi     = git_info(agent_cwd) if agent_cwd else {"project": None, "worktree": None}
 
-        tool_use_id = agent_tool_use.get(agent_id, "")
+        tool_use_id      = agent_tool_use.get(agent_id, "")
         tool_result_done = bool(tool_use_id and tool_use_id in completed_tool_uses)
-
-        stale = jsonl_mtime is not None and (time.time() - jsonl_mtime) > 120
+        stale            = jsonl_mtime is not None and (time.time() - jsonl_mtime) > 120
 
         shutdown_sent = False
         if shutdown_requests and started_at:
@@ -370,41 +496,54 @@ def read_subagents(session_dir: Path, agent_tool_use: dict, completed_tool_uses:
                     break
 
         if hook_states and agent_id in hook_states:
-            if hook_states[agent_id] == "done":
-                is_done = True
-            elif tool_result_done:
-                is_done = True
-            elif shutdown_sent:
-                is_done = True
-            elif stale:
-                is_done = True
-            else:
-                is_done = False
+            is_done = hook_states[agent_id] == "done" or tool_result_done or shutdown_sent or stale
         else:
-            if tool_use_id:
-                is_done = tool_result_done
-            else:
-                is_done = True
+            is_done = tool_result_done if tool_use_id else True
+
         status = "live" if (not is_done) and session_live else "done"
 
+        duration = None
+        if started_at and ended_at:
+            try:
+                t0 = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+                t1 = datetime.fromisoformat(ended_at.replace("Z", "+00:00"))
+                duration = (t1 - t0).total_seconds()
+            except Exception:
+                pass
+
+        total_tokens = usage["input"] + usage["output"] + usage["cache_write"] + usage["cache_read"]
+
         agents.append({
-            "agent_id":      agent_id,
-            "agent_type":    agent_type,
-            "description":   description,
-            "started_at":    started_at,
-            "size_kb":       size_kb,
-            "tool_use_count": tool_use_count,
-            "status":        status,
-            "cwd":           agent_cwd,
-            "branch":        agent_branch,
-            "worktree":      agent_gi.get("worktree"),
+            "agent_id":    agent_id,
+            "agent_type":  agent_type,
+            "description": description,
+            "started_at":  started_at,
+            "ended_at":    ended_at,
+            "size_kb":     size_kb,
+            "tool_count":  tool_count,
+            "tokens":      total_tokens,
+            "usd":         usage["usd"],
+            "duration":    duration,
+            "status":      status,
+            "cwd":         agent_cwd,
+            "branch":      agent_branch,
+            "worktree":    agent_gi.get("worktree"),
         })
 
     agents.sort(key=lambda a: a["started_at"] or "")
     return agents
 
 
-# ── Session scanning ──────────────────────────────────────────────────────────
+# ── Meta.json ──────────────────────────────────────────────────────────────────
+
+def read_session_meta(session_dir: Path) -> dict:
+    try:
+        return json.loads((session_dir / "meta.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+# ── Session scanning ───────────────────────────────────────────────────────────
 
 def scan_sessions() -> list[dict]:
     live              = live_transcripts()
@@ -432,8 +571,8 @@ def scan_sessions() -> list[dict]:
                     pid         = None
                     process_sid = None
 
-                session_dir = transcript.parent / session_id
-                agents      = read_subagents(
+                session_dir  = transcript.parent / session_id
+                agents       = read_subagents(
                     session_dir,
                     info["agent_tool_use"],
                     info["completed_tool_uses"],
@@ -441,23 +580,46 @@ def scan_sessions() -> list[dict]:
                     hook_states,
                     shutdown_requests,
                 )
-                team_lead = read_team_lead(session_id) if status == "live" else None
+                team_config  = read_team_config(session_id) if status == "live" else None
+                session_meta = read_session_meta(session_dir)
+
+                # Session-wide duration (min start → max end across session + all agents)
+                all_starts = [s for s in [info["started_at"]] + [a["started_at"] for a in agents] if s]
+                all_ends   = [e for e in [info["ended_at"]]   + [a["ended_at"]   for a in agents] if e]
+                duration   = None
+                if all_starts and all_ends:
+                    try:
+                        t0 = datetime.fromisoformat(min(all_starts).replace("Z", "+00:00"))
+                        t1 = datetime.fromisoformat(max(all_ends).replace("Z", "+00:00"))
+                        duration = (t1 - t0).total_seconds()
+                    except Exception:
+                        pass
+
+                total_kb     = round((info["size_kb"] or 0) + sum((a["size_kb"] or 0) for a in agents), 1)
+                total_tools  = info["tool_count"] + sum(a["tool_count"] for a in agents)
+                total_tokens = info["tokens"] + sum(a["tokens"] for a in agents)
+                total_usd    = info["usd"] + sum(a["usd"] for a in agents)
+
                 sessions.append({
-                    "session_id":  session_id,
-                    "process_sid": process_sid,
-                    "pid":         pid,
-                    "status":      status,
-                    "project":     gi["project"],
-                    "worktree":    gi["worktree"],
-                    "branch":      info["branch"],
-                    "started_at":  info["started_at"],
-                    "title":       info["title"],
-                    "size_kb":     info["size_kb"],
-                    "agents":      agents,
-                    "team_lead":   team_lead,
+                    "session_id":   session_id,
+                    "process_sid":  process_sid,
+                    "pid":          pid,
+                    "status":       status,
+                    "project":      gi["project"],
+                    "worktree":     gi["worktree"],
+                    "branch":       info["branch"],
+                    "started_at":   info["started_at"],
+                    "title":        info["title"],
+                    "duration":     duration,
+                    "total_kb":     total_kb,
+                    "total_tools":  total_tools,
+                    "total_tokens": total_tokens,
+                    "total_usd":    total_usd,
+                    "agents":       agents,
+                    "team_config":  team_config,
+                    "meta":         session_meta,
                 })
 
-    # Live processes with no transcript yet
     if SESSIONS_DIR.exists():
         for f in SESSIONS_DIR.glob("*.json"):
             try:
@@ -472,41 +634,72 @@ def scan_sessions() -> list[dict]:
                 continue
             gi = git_info(cwd)
             sessions.append({
-                "session_id":  sid,
-                "process_sid": None,
-                "pid":         pid,
-                "status":      "live",
-                "project":     gi["project"] or cwd,
-                "worktree":    gi["worktree"],
-                "branch":      git(cwd, "rev-parse", "--abbrev-ref", "HEAD"),
-                "started_at":  datetime.fromtimestamp(ms / 1000, tz=timezone.utc).isoformat(),
-                "title":       None,
-                "size_kb":     None,
-                "agents":      [],
+                "session_id":   sid,
+                "process_sid":  None,
+                "pid":          pid,
+                "status":       "live",
+                "project":      gi["project"] or cwd,
+                "worktree":     gi["worktree"],
+                "branch":       git(cwd, "rev-parse", "--abbrev-ref", "HEAD"),
+                "started_at":   datetime.fromtimestamp(ms / 1000, tz=timezone.utc).isoformat(),
+                "title":        None,
+                "duration":     None,
+                "total_kb":     None,
+                "total_tools":  0,
+                "total_tokens": 0,
+                "total_usd":    0.0,
+                "agents":       [],
+                "team_config":  None,
+                "meta":         {},
             })
 
     sessions.sort(key=lambda s: s["started_at"] or "", reverse=True)
     return sessions
 
 
-# ── Rendering ─────────────────────────────────────────────────────────────────
+# ── Rendering ──────────────────────────────────────────────────────────────────
 
-def fmt_dt(iso: str | None) -> str:
-    if not iso:
-        return "—"
-    try:
-        dt = datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone()
-        return dt.strftime("%d-%b-%Y %H:%M:%S").upper()
-    except Exception:
-        return iso[:19]
+def _header_row(out, label: str, value: str, delta_key: str | None = None, delta_val: float = 0) -> None:
+    out.append("  ")
+    out.append(f"{label:<10}", style=STYLE_KEY)
+    out.append("  ")
+    if delta_key and _check_delta(delta_key, delta_val):
+        out.append(value, style=STYLE_DELTA)
+        out.append(" ↑", style=STYLE_DELTA)
+    else:
+        out.append(value, style=STYLE_VAL)
+    out.append("\n")
 
 
-def fmt_size(size_kb: float | None) -> str:
-    if size_kb is None:
-        return "0 KB"
-    if size_kb >= 1024:
-        return f"{size_kb / 1024:.1f} MB"
-    return f"{size_kb} KB"
+def _agent_summary_row(out, agent_rows: list[dict], session_id: str) -> None:
+    if not agent_rows:
+        return
+    total_kb     = round(sum(r["total_kb"]     for r in agent_rows), 1)
+    total_tools  = sum(r["total_tools"]  for r in agent_rows)
+    total_tokens = sum(r["total_tokens"] for r in agent_rows)
+    total_usd    = sum(r["total_usd"]    for r in agent_rows)
+    total_dur    = sum(r["duration"]     for r in agent_rows)
+    total_inv    = sum(r["invocations"]  for r in agent_rows)
+
+    pfx = session_id + ":agents:"
+    parts = [
+        (fmt_size(total_kb),          pfx + "kb",    total_kb),
+        (f"⚙ {total_tools}",          pfx + "tools", total_tools),
+        (fmt_duration(total_dur),      pfx + "dur",   total_dur),
+        (fmt_tokens(total_tokens),     pfx + "tok",   total_tokens),
+        (fmt_usd(total_usd),           pfx + "usd",   total_usd),
+        (f"×{total_inv}",              pfx + "inv",   total_inv),
+    ]
+    out.append("     ")
+    dot = ("  ·  ", STYLE_DIM)
+    for i, (txt, key, val) in enumerate(parts):
+        if i:
+            out.append(*dot)
+        t, st, arrow, as_ = _fmt_delta(txt, key, val)
+        out.append(t, style=st)
+        if arrow:
+            out.append(arrow, style=as_)
+    out.append("\n\n")
 
 
 def render_sessions() -> "Text":
@@ -519,196 +712,209 @@ def render_sessions() -> "Text":
         out.append("\n  no sessions found\n")
         return out
 
-    sep = "  " + "─" * 72
+    sep  = "  " + "─" * 76
+    home = Path.home()
 
     for s in sessions:
-        status     = s["status"]
-        session_id = s["session_id"]
-        process_sid= s.get("process_sid") or ""
-        pid        = s["pid"]
-        branch     = s["branch"]
-        worktree   = s["worktree"]
-        title      = s["title"] or ""
-        project    = s["project"] or ""
-        started    = fmt_dt(s["started_at"])
-        size       = fmt_size(s["size_kb"])
+        status      = s["status"]
+        session_id  = s["session_id"]
+        process_sid = s.get("process_sid") or ""
+        branch      = s["branch"]
+        project     = s["project"] or ""
+        meta        = s.get("meta", {})
+        agents      = s.get("agents", [])
+        team_config = s.get("team_config")
 
         out.append("\n" + sep + "\n", style=STYLE_DIM)
 
+        # Project name + live dot
+        project_name = Path(project).name if project else "—"
         out.append("  ")
         if status == "live":
-            out.append("●", style=STYLE_NEON + " blink")
+            out.append("● ", style=STYLE_NEON + " blink")
         else:
-            out.append("○", style=STYLE_DIM)
-
-        out.append("  ")
-        out.append(session_id, style=STYLE_NEON)
-
-        if process_sid and process_sid != session_id:
-            out.append("  ")
-            out.append("←", style=STYLE_SILVER)
-            out.append(process_sid, style=STYLE_DIM)
-
-        if pid:
-            out.append("  ")
-            out.append(f"pid {pid}", style=STYLE_DIM)
-
+            out.append("○ ", style=STYLE_DIM)
+        out.append(project_name, style=STYLE_BOLD)
         out.append("\n")
 
+        # Feature one-liner
+        title = (s.get("title") or meta.get("feature") or "").strip()
         if title:
+            if len(title) > 74:
+                title = title[:71] + "…"
             out.append("  ")
             out.append(title, style=STYLE_PEARL)
             out.append("\n")
 
-        meta_parts: list[tuple[str, str]] = []
+        out.append("\n")
 
+        # Session ID + chain
+        sid_short  = session_id[:8]
+        psid_short = process_sid[:8] if (process_sid and process_sid != session_id) else None
+        chain = sid_short + ("  ←  " + psid_short if psid_short else "")
+        _header_row(out, "session", chain)
+        _header_row(out, "created", fmt_dt(s["started_at"]))
         if project:
-            p = Path(project)
-            meta_parts.append((str(p.parent) + "/", STYLE_DIM))
-            meta_parts.append((p.name, STYLE_BOLD))
-
+            _header_row(out, "tree", project)
         if branch:
-            meta_parts.append((f"⎇ {branch}", STYLE_NEON_DIM))
+            _header_row(out, "branch", branch)
 
-        if worktree:
-            meta_parts.append((f"worktree {Path(worktree).name}", STYLE_NEON_DIM))
-
-        meta_parts.append((started, STYLE_DIM))
-
-        out.append("  ")
-        dot_sep = ("  ·  ", STYLE_DIM)
-        for i, (text, style) in enumerate(meta_parts):
-            if i > 0:
-                out.append(*dot_sep)
-            out.append(text, style=style)
-
-        out.append(*dot_sep)
-        if s["size_kb"] is not None:
-            t, st, arrow, as_ = _fmt_delta(size, session_id + ":kb", s["size_kb"])
-            out.append(t, style=st)
-            if arrow:
-                out.append(arrow, style=as_)
+        # meta fields (from meta.json)
+        issues = meta.get("issues")
+        if issues:
+            val = "  ".join(issues) if isinstance(issues, list) else str(issues)
         else:
-            out.append(size, style=STYLE_DIM)
+            val = "none"
+        _header_row(out, "issue(s)", val)
+        _header_row(out, "tag", meta.get("tag") or "none")
+        _header_row(out, "PR",  meta.get("pr")  or "none")
+
+        # aggregate metrics
+        pfx = session_id + ":"
+        _header_row(out, "memory",
+            fmt_size(s["total_kb"]),
+            pfx + "kb",    s["total_kb"] or 0)
+        _header_row(out, "tool",
+            str(s["total_tools"]),
+            pfx + "tools", s["total_tools"])
+        _header_row(out, "time",
+            fmt_duration(s["duration"]),
+            pfx + "dur",   s["duration"] or 0)
+        _header_row(out, "token",
+            fmt_tokens(s["total_tokens"]),
+            pfx + "tok",   s["total_tokens"])
+        _header_row(out, "USD",
+            fmt_usd(s["total_usd"]),
+            pfx + "usd",   s["total_usd"])
+
+        if not agents:
+            continue
 
         out.append("\n")
 
-        agents    = s.get("agents", [])
-        team_lead = s.get("team_lead")
-        if agents or team_lead:
-            groups: dict[str, list] = {}
-            for a in agents:
-                groups.setdefault(a["agent_type"], []).append(a)
+        # Build per-type agent rows
+        team_member_ids = team_member_agent_ids(team_config) if team_config else set()
+        lead_type       = team_lead_type(team_config) if team_config else None
 
-            rows = []
-            for agent_type, invocations in groups.items():
-                last        = invocations[-1]
-                row_status  = "live" if any(a["status"] == "live" for a in invocations) else "done"
-                count       = len(invocations)
-                total_kb    = round(sum((a["size_kb"] or 0) for a in invocations), 1)
-                total_calls = sum(a["tool_use_count"] for a in invocations)
-                rows.append({
-                    "agent_type":  agent_type,
-                    "agent_id":    last["agent_id"],
-                    "description": last["description"],
-                    "status":      row_status,
-                    "count":       count,
-                    "total_kb":    total_kb,
-                    "total_calls": total_calls,
-                    "is_lead":     False,
-                    "cwd":         last.get("cwd"),
-                    "branch":      last.get("branch"),
-                    "worktree":    last.get("worktree"),
-                })
+        groups: dict[str, list] = {}
+        for a in agents:
+            groups.setdefault(a["agent_type"], []).append(a)
 
-            if team_lead:
-                rows.insert(0, {
-                    "agent_type":  team_lead,
-                    "agent_id":    "",
-                    "description": "team-lead",
-                    "status":      status,
-                    "count":       None,
-                    "total_kb":    None,
-                    "total_calls": None,
-                    "is_lead":     True,
-                })
+        agent_rows: list[dict] = []
+        for agent_type, invocations in groups.items():
+            last      = invocations[-1]
+            row_live  = any(a["status"] == "live" for a in invocations)
+            in_team   = any(a["agent_id"] in team_member_ids for a in invocations)
+            agent_rows.append({
+                "agent_type":   agent_type,
+                "agent_id":     last["agent_id"],
+                "status":       "live" if row_live else "done",
+                "invocations":  len(invocations),
+                "total_kb":     round(sum((a["size_kb"] or 0) for a in invocations), 1),
+                "total_tools":  sum(a["tool_count"] for a in invocations),
+                "total_tokens": sum(a["tokens"] for a in invocations),
+                "total_usd":    sum(a["usd"] for a in invocations),
+                "duration":     sum((a["duration"] or 0) for a in invocations),
+                "in_team":      in_team,
+                "cwd":          last.get("cwd"),
+                "branch":       last.get("branch"),
+                "worktree":     last.get("worktree"),
+            })
 
-            col_type  = max(len(r["agent_type"])                              for r in rows)
-            col_count = max(len(f"×{r['count']}") if r["count"] else 0        for r in rows)
-            col_size  = max(len(fmt_size(r["total_kb"])) if r["total_kb"] else 0 for r in rows)
-            col_calls = max(len(str(r["total_calls"])) if r["total_calls"] is not None else 0 for r in rows)
-            dot_sep   = ("  ·  ", STYLE_DIM)
+        _agent_summary_row(out, agent_rows, session_id)
 
-            for r in rows:
-                atype  = r["agent_type"].ljust(col_type)
-                adesc  = r["description"] or ""
+        # Column widths
+        col_type = max(len(r["agent_type"])                for r in agent_rows)
+        col_size = max(len(fmt_size(r["total_kb"]))        for r in agent_rows)
+        col_tool = max(len(f"⚙ {r['total_tools']}")       for r in agent_rows)
+        col_dur  = max(len(fmt_duration(r["duration"]))    for r in agent_rows)
+        col_tok  = max(len(fmt_tokens(r["total_tokens"]))  for r in agent_rows)
+        col_usd  = max(len(fmt_usd(r["total_usd"]))        for r in agent_rows)
+        col_inv  = max(len(f"×{r['invocations']}")         for r in agent_rows)
 
-                out.append("     ")
-                if r["status"] == "live":
-                    out.append("●", style=STYLE_NEON + " blink")
-                else:
-                    out.append("○", style=STYLE_DIM)
-                out.append("  ")
-                out.append(atype, style=STYLE_NEON_DIM)
+        dot = ("  ·  ", STYLE_DIM)
 
-                if r["is_lead"]:
-                    out.append(*dot_sep)
-                    out.append("team-lead", style=STYLE_DIM)
-                else:
-                    aid    = r["agent_id"][:8]
-                    acount = f"×{r['count']}".rjust(col_count)
-                    asize  = fmt_size(r["total_kb"]).rjust(col_size)
-                    acalls = str(r["total_calls"]).rjust(col_calls)
-                    pfx    = session_id + ":" + r["agent_type"] + ":"
+        def _render_row(r: dict, line_pfx: str, body_pfx: str) -> None:
+            atype = r["agent_type"].ljust(col_type)
+            aid   = r["agent_id"][:8]
+            k     = session_id + ":" + r["agent_type"] + ":"
 
-                    out.append(*dot_sep)
-                    out.append(aid, style=STYLE_DIM)
+            out.append(line_pfx)
+            if r["status"] == "live":
+                out.append("○ ", style=STYLE_NEON + " blink")
+            else:
+                out.append("○ ", style=STYLE_DIM)
+            out.append(atype, style=STYLE_NEON_DIM)
 
-                    out.append(*dot_sep)
-                    t, st, arrow, as_ = _fmt_delta(acount, pfx + "count", r["count"])
-                    out.append(t, style=st)
-                    if arrow:
-                        out.append(arrow, style=as_)
+            for txt, key, val in [
+                (fmt_size(r["total_kb"]).rjust(col_size),         k+"kb",    r["total_kb"]),
+                (f"⚙ {r['total_tools']}".rjust(col_tool),         k+"tools", r["total_tools"]),
+                (fmt_duration(r["duration"]).rjust(col_dur),       k+"dur",   r["duration"]),
+                (fmt_tokens(r["total_tokens"]).rjust(col_tok),     k+"tok",   r["total_tokens"]),
+                (fmt_usd(r["total_usd"]).rjust(col_usd),           k+"usd",   r["total_usd"]),
+                (f"×{r['invocations']}".rjust(col_inv),            k+"inv",   r["invocations"]),
+            ]:
+                out.append(*dot)
+                t, st, arrow, as_ = _fmt_delta(txt, key, val)
+                out.append(t, style=st)
+                if arrow:
+                    out.append(arrow, style=as_)
+            out.append("\n")
 
-                    out.append(*dot_sep)
-                    t, st, arrow, as_ = _fmt_delta(asize, pfx + "kb", r["total_kb"])
-                    out.append(t, style=st)
-                    if arrow:
-                        out.append(arrow, style=as_)
+            # agent ID
+            out.append(body_pfx + aid + "\n", style=STYLE_DIM)
 
-                    out.append(*dot_sep)
-                    t, st, arrow, as_ = _fmt_delta(f"⚙ {acalls}", pfx + "calls", r["total_calls"])
-                    out.append(t, style=st)
-                    if arrow:
-                        out.append(arrow, style=as_)
-
+            # cwd / branch / worktree (only if different from session)
+            if r.get("cwd") and (r.get("worktree") is not None or r.get("branch") != branch):
+                rcwd = Path(r["cwd"])
+                try:
+                    display_cwd = "~/" + str(rcwd.relative_to(home))
+                except ValueError:
+                    display_cwd = str(rcwd)
+                out.append(body_pfx, style=STYLE_DIM)
+                out.append(display_cwd, style=STYLE_DIM)
+                if r.get("branch"):
+                    out.append(f"  ⎇ {r['branch']}", style=STYLE_NEON_DIM)
+                if r.get("worktree") is not None:
+                    out.append(f"  worktree {Path(r['worktree']).name}", style=STYLE_NEON_DIM)
                 out.append("\n")
 
-                if adesc and not r["is_lead"]:
-                    out.append("          ")
-                    out.append(adesc, style=STYLE_DIM)
-                    out.append("\n")
+        standalone = [r for r in agent_rows if not r["in_team"]]
+        team_rows  = [r for r in agent_rows if r["in_team"]]
 
-                if not r["is_lead"] and r.get("cwd") and (r.get("worktree") is not None or r.get("branch") != branch):
-                    home = Path.home()
-                    rcwd = Path(r["cwd"])
-                    try:
-                        display_cwd = "~/" + str(rcwd.relative_to(home))
-                    except ValueError:
-                        display_cwd = str(rcwd)
-                    out.append("          ")
-                    out.append(display_cwd, style=STYLE_DIM)
-                    if r.get("branch"):
-                        out.append(f"  ⎇ {r['branch']}", style=STYLE_NEON_DIM)
-                    if r.get("worktree") is not None:
-                        out.append("  [worktree]", style=STYLE_NEON_DIM)
-                    out.append("\n")
+        # Standalone agents (flat)
+        for r in standalone:
+            _render_row(r, line_pfx="     ", body_pfx="        ")
+
+        # Team lead + tree children
+        if lead_type or team_rows:
+            out.append("     ")
+            if status == "live":
+                out.append("○ ", style=STYLE_NEON + " blink")
+            else:
+                out.append("○ ", style=STYLE_DIM)
+            out.append((lead_type or "rose").ljust(col_type), style=STYLE_NEON_DIM)
+            out.append(*dot)
+            out.append("team-lead", style=STYLE_DIM)
+            out.append("\n")
+
+            if team_rows:
+                out.append("     |\n", style=STYLE_DIM)
+                for i, r in enumerate(team_rows):
+                    is_last    = i == len(team_rows) - 1
+                    line_pfx   = "     |-- "
+                    body_pfx   = ("         " if is_last else "     |   ")
+                    _render_row(r, line_pfx=line_pfx, body_pfx=body_pfx)
+                    if not is_last:
+                        out.append("     |\n", style=STYLE_DIM)
+
+        out.append("\n")
 
     out.append(sep + "\n", style=STYLE_DIM)
     return out
 
 
-# ── Typer app ─────────────────────────────────────────────────────────────────
+# ── Typer app ──────────────────────────────────────────────────────────────────
 
 app = typer.Typer(name="observe", help="Session inspector.", add_completion=False)
 

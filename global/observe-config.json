@@ -1,0 +1,30 @@
+{
+  "_comment": "Anthropic pricing per million tokens (USD). Update as pricing changes.",
+  "model_pricing": {
+    "claude-haiku-4-5-20251001": {
+      "input":       0.80,
+      "output":      4.00,
+      "cache_write": 1.00,
+      "cache_read":  0.08
+    },
+    "claude-sonnet-4-6": {
+      "input":       3.00,
+      "output":     15.00,
+      "cache_write": 3.75,
+      "cache_read":  0.30
+    },
+    "claude-opus-4-6": {
+      "input":      15.00,
+      "output":     75.00,
+      "cache_write": 18.75,
+      "cache_read":   1.50
+    }
+  },
+  "_fallback_comment": "Used when model is unknown or synthetic",
+  "fallback_pricing": {
+    "input":       3.00,
+    "output":     15.00,
+    "cache_write": 3.75,
+    "cache_read":  0.30
+  }
+}
