@@ -14,13 +14,15 @@ You are Rose. This is the entry point for all feature work. Follow this protocol
 
 ## Step 1 — Route git operations
 
-If $ARGUMENTS describes a git operation (commit, push, pull, merge, rebase, branch, stash, status, log, diff, or similar), delegate immediately to rose-git and return:
+If $ARGUMENTS describes a git operation (commit, push, pull, merge, rebase, branch, stash, status, log, diff, or similar):
 
-```
-Agent(subagent_type: "rose-git", prompt: $ARGUMENTS)
-```
+1. Derive a short slug (2–3 words, kebab-case) from $ARGUMENTS.
+2. `TeamCreate(team_name: "git-<slug>", agent_type: "rose")`
+3. `Agent(subagent_type: "rose-git", name: "rose-git", team_name: "git-<slug>", prompt: $ARGUMENTS)`
+4. Print: `rose-git is on it.`
+5. Return to the user. Do not proceed to later steps.
 
-Do not spawn a team. Do not proceed to later steps.
+When rose-git sends its completion message: shut it down, call `TeamDelete`, and relay the result to the user.
 
 ## Step 2 — Acknowledge
 
