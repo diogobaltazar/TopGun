@@ -3,7 +3,8 @@
 rose observe — session inspector
 
 Usage:
-  python scripts/observe.py --list    # list all sessions
+  python scripts/observe.py --list     # list all sessions
+  python scripts/observe.py --watch    # live view, updates on file changes
 """
 
 import json
@@ -11,26 +12,26 @@ import os
 import re
 import subprocess
 import sys
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
 PROJECTS_DIR = Path.home() / ".claude" / "projects"
 SESSIONS_DIR = Path.home() / ".claude" / "sessions"
 
-# ── ANSI ──────────────────────────────────────────────────────────────────────
+DEBOUNCE_S = 0.15  # seconds after last event before redrawing
 
-RESET  = "\033[0m"
-BOLD   = "\033[1m"
-DIM    = "\033[2m"
-BLINK  = "\033[5m"
-
-# Matrix palette — blacks, pearls, neon greens
-NEON         = "\033[38;5;118m"  # live dot / session ID — bright neon green
-NEON_DIM     = "\033[38;5;28m"   # branch / worktree     — deep matrix green
-PEARL        = "\033[38;5;253m"  # title                 — pearl white
-SILVER       = "\033[38;5;245m"  # resumed ←             — silver
-
-YELLOW = SILVER   # fallback for fmt_dot unknown
+# ── Rich styles (Matrix palette) ──────────────────────────────────────────────
+#
+#  colour_number corresponds to xterm-256 palette entries, same as the
+#  ANSI escape codes we had before — just expressed as rich style strings.
+#
+STYLE_NEON     = "bold color(118)"   # session ID / live dot — bright neon green
+STYLE_NEON_DIM = "color(28)"         # branch / worktree     — deep matrix green
+STYLE_PEARL    = "color(253)"        # title                 — pearl white
+STYLE_SILVER   = "color(245)"        # resumed ←             — silver
+STYLE_DIM      = "dim"               # dates, sizes, project parent
+STYLE_BOLD     = "bold"              # project name
 
 
 # ── Git helpers ───────────────────────────────────────────────────────────────
@@ -55,11 +56,9 @@ def git_info(cwd: str) -> dict:
     if not git_dir:
         return {"project": None, "worktree": None}
 
-    # A worktree's --git-dir looks like /path/to/repo/.git/worktrees/<name>
     is_worktree = "/.git/worktrees/" in git_dir or git_dir.endswith("/worktrees")
 
     if is_worktree:
-        # Common dir points to the main repo's .git
         common_dir = git(cwd, "rev-parse", "--git-common-dir")
         if common_dir:
             project = str(Path(common_dir).resolve().parent)
@@ -84,17 +83,11 @@ def pid_running(pid: int) -> bool:
 
 
 def encode_cwd(cwd: str) -> str:
-    """Encode a cwd path to a Claude project directory name (/ → -)."""
     return cwd.replace("/", "-")
 
 
 def live_transcripts() -> dict[str, dict]:
-    """Return {transcript_stem: {pid, sessionId}} for all live processes.
-
-    sessionId in sessions/{pid}.json is the process identity, NOT the transcript
-    filename — they diverge on resume. Instead we match by finding the transcript
-    in the project dir with mtime >= startedAt (ms).
-    """
+    """Return {transcript_stem: {pid, sessionId}} for all live processes."""
     result = {}
     if not SESSIONS_DIR.exists():
         return result
@@ -135,7 +128,6 @@ def strip_tags(text: str) -> str:
 
 
 def read_transcript(path: Path) -> dict:
-    """Extract cwd, branch, started_at, ended_at, title from a transcript."""
     title      = None
     branch     = None
     cwd        = None
@@ -186,7 +178,7 @@ def read_transcript(path: Path) -> dict:
 # ── Session scanning ──────────────────────────────────────────────────────────
 
 def scan_sessions() -> list[dict]:
-    live         = live_transcripts()  # {transcript_stem: {pid, sessionId}}
+    live         = live_transcripts()
     sessions     = []
     matched_pids = set()
 
@@ -253,7 +245,7 @@ def scan_sessions() -> list[dict]:
     return sessions
 
 
-# ── Formatting ────────────────────────────────────────────────────────────────
+# ── Rendering ─────────────────────────────────────────────────────────────────
 
 def fmt_dt(iso: str | None) -> str:
     if not iso:
@@ -265,78 +257,167 @@ def fmt_dt(iso: str | None) -> str:
         return iso[:19]
 
 
-def fmt_project(path: str | None) -> str:
-    if not path:
-        return f"{DIM}—{RESET}"
-    p = Path(path)
-    parent = str(p.parent) + "/"
-    name   = p.name
-    return f"{DIM}{parent}{RESET}{BOLD}{name}{RESET}"
+def fmt_size(size_kb: float | None) -> str:
+    if size_kb is None:
+        return "0 KB"
+    if size_kb >= 1024:
+        return f"{size_kb / 1024:.1f} MB"
+    return f"{size_kb} KB"
 
 
-def fmt_worktree(path: str | None) -> str:
-    if not path:
-        return f"{DIM}—{RESET}"
-    return Path(path).name
+def render_sessions() -> "Text":
+    from rich.text import Text
 
-
-SEP = f"  {DIM}{'─' * 72}{RESET}"
-
-
-def fmt_dot(status: str) -> str:
-    if status == "live":
-        return f"{BLINK}{NEON}●{RESET}"
-    elif status == "unknown":
-        return f"{SILVER}●{RESET}"
-    else:
-        return f"{DIM}○{RESET}"
-
-
-def list_sessions():
     sessions = scan_sessions()
+    out = Text()
 
     if not sessions:
-        print("\n  no sessions found\n")
-        return
+        out.append("\n  no sessions found\n")
+        return out
 
-    print()
+    sep = "  " + "─" * 72
+
     for s in sessions:
-        status   = s["status"]
-        sid      = f"{BOLD}{NEON}{s['session_id']}{RESET}"
-        psid     = s.get("process_sid", "")
-        resumed  = f"{SILVER}←{DIM}{psid}{RESET}" if psid and psid != s["session_id"] else ""
-        pid      = f"{DIM}pid {s['pid']}{RESET}" if s["pid"] else ""
-        started  = fmt_dt(s["started_at"])
-        project  = fmt_project(s["project"])
-        worktree = s["worktree"] and f"{NEON_DIM}worktree {fmt_worktree(s['worktree'])}{RESET}"
-        branch   = f"{NEON_DIM}⎇ {s['branch']}{RESET}" if s["branch"] else None
-        title    = f"{PEARL}{s['title']}{RESET}" if s["title"] else ""
-        if s["size_kb"] is None:
-            size = "0 KB"
-        elif s["size_kb"] >= 1024:
-            size = f"{s['size_kb'] / 1024:.1f} MB"
+        status     = s["status"]
+        session_id = s["session_id"]
+        process_sid= s.get("process_sid") or ""
+        pid        = s["pid"]
+        branch     = s["branch"]
+        worktree   = s["worktree"]
+        title      = s["title"] or ""
+        project    = s["project"] or ""
+        started    = fmt_dt(s["started_at"])
+        size       = fmt_size(s["size_kb"])
+
+        # separator
+        out.append("\n" + sep + "\n", style=STYLE_DIM)
+
+        # dot
+        out.append("  ")
+        if status == "live":
+            out.append("●", style=STYLE_NEON + " blink")
         else:
-            size = f"{s['size_kb']} KB"
+            out.append("○", style=STYLE_DIM)
 
-        meta_parts = [p for p in [project, branch, worktree, f"{DIM}{started}{RESET}", f"{DIM}{size}{RESET}"] if p]
-        meta = f"  {DIM}·{RESET}  ".join(str(p) for p in meta_parts)
+        # session id
+        out.append("  ")
+        out.append(session_id, style=STYLE_NEON)
 
-        print(SEP)
-        header = "  ".join(filter(None, [sid, resumed, pid]))
-        print(f"  {fmt_dot(status)}  {header}")
-        print(f"  {title}")
-        print(f"  {meta}")
-        print()
+        # resumed indicator
+        if process_sid and process_sid != session_id:
+            out.append("  ")
+            out.append("←", style=STYLE_SILVER)
+            out.append(process_sid, style=STYLE_DIM)
 
-    print(SEP)
-    print()
+        # pid
+        if pid:
+            out.append("  ")
+            out.append(f"pid {pid}", style=STYLE_DIM)
+
+        out.append("\n")
+
+        # title
+        if title:
+            out.append("  ")
+            out.append(title, style=STYLE_PEARL)
+            out.append("\n")
+
+        # meta row
+        meta_parts: list[tuple[str, str]] = []
+
+        if project:
+            p = Path(project)
+            meta_parts.append((str(p.parent) + "/", STYLE_DIM))
+            meta_parts.append((p.name, STYLE_BOLD))
+
+        if branch:
+            meta_parts.append((f"⎇ {branch}", STYLE_NEON_DIM))
+
+        if worktree:
+            meta_parts.append((f"worktree {Path(worktree).name}", STYLE_NEON_DIM))
+
+        meta_parts.append((started, STYLE_DIM))
+        meta_parts.append((size,    STYLE_DIM))
+
+        out.append("  ")
+        dot_sep = ("  ·  ", STYLE_DIM)
+        for i, (text, style) in enumerate(meta_parts):
+            if i > 0:
+                out.append(*dot_sep)
+            out.append(text, style=style)
+
+        out.append("\n")
+
+    out.append(sep + "\n", style=STYLE_DIM)
+    return out
+
+
+# ── List (one-shot) ───────────────────────────────────────────────────────────
+
+def list_sessions():
+    from rich.console import Console
+    Console().print(render_sessions())
+
+
+# ── Watch mode ────────────────────────────────────────────────────────────────
+
+def watch_sessions():
+    try:
+        from watchdog.observers import Observer
+        from watchdog.events import FileSystemEventHandler
+    except ImportError:
+        print("watchdog is required for --watch:  pip install watchdog")
+        sys.exit(1)
+
+    from rich.console import Console
+    from rich.live import Live
+
+    console = Console()
+    live    = Live(render_sessions(), console=console, auto_refresh=False)
+
+    timer: threading.Timer | None = None
+    lock = threading.Lock()
+
+    def refresh():
+        live.update(render_sessions(), refresh=True)
+
+    class Handler(FileSystemEventHandler):
+        def on_any_event(self, event):
+            nonlocal timer
+            if event.is_directory:
+                return
+            with lock:
+                if timer is not None:
+                    timer.cancel()
+                timer = threading.Timer(DEBOUNCE_S, refresh)
+                timer.daemon = True
+                timer.start()
+
+    observer = Observer()
+    handler  = Handler()
+
+    for watch_dir in (SESSIONS_DIR, PROJECTS_DIR):
+        watch_dir.mkdir(parents=True, exist_ok=True)
+        observer.schedule(handler, str(watch_dir), recursive=True)
+
+    observer.start()
+
+    try:
+        with live:
+            observer.join()
+    except KeyboardInterrupt:
+        observer.stop()
+        observer.join()
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    if len(sys.argv) > 1 and sys.argv[1] == "--list":
+    args = sys.argv[1:]
+    if args and args[0] == "--list":
         list_sessions()
+    elif args and args[0] == "--watch":
+        watch_sessions()
     else:
         print(__doc__)
         sys.exit(1)
