@@ -1,601 +1,646 @@
-const { useState, useEffect, useRef, useMemo } = React;
+const { useState, useEffect, useRef, useMemo, useCallback } = React;
 
-// ─── Actor colours ────────────────────────────────────────────────────────────
+// ─── Constants ─────────────────────────────────────────────────────────────
 
-const ACTOR_COLOURS = {
-  analyst:     '#f59e0b',   // amber/gold
-  engineer:    '#38bdf8',   // sky blue
-  git:         '#fb923c',   // orange
-  github:      '#a78bfa',   // purple
-  orchestrator:'#4ade80',   // green
-  user:        '#f87171',   // coral/rose
-  _default:    '#4b5563',   // muted grey
-};
+const WS_BASE = `ws://${window.location.hostname}:${window.location.port || 8000}`;
 
-function actorColour(actor) {
-  return ACTOR_COLOURS[actor] ?? ACTOR_COLOURS._default;
+const ACTORS = [
+  { id: 'user',          label: 'USER',          color: '#00B4FF' },  // Jedi blue
+  { id: 'rose',          label: 'ROSE',          color: '#CC00FF' },  // Mace Windu purple
+  { id: 'rose-research', label: 'ROSE RESEARCH', color: '#00FF88' },  // Yoda green
+  { id: 'rose-backlog',  label: 'ROSE BACKLOG',  color: '#FF2222' },  // Sith red
+];
+
+const ACTOR_MAP = Object.fromEntries(ACTORS.map(a => [a.id, a]));
+
+function actorColor(id) {
+  return (ACTOR_MAP[id] || { color: '#666' }).color;
 }
 
-// ─── Step metadata ────────────────────────────────────────────────────────────
+// State machine nodes — each paired with its lightsaber colour
+const NODES = [
+  {
+    id: 'FP', cx: 90, cy: 250, r: 40,
+    color: '#00B4FF', stepColor: '#00B4FF',   // Jedi blue
+    label: 'USER',
+    desc: ['Prompt assistant with', 'behaviour specs and', 'product questions'],
+    entry: true,
+  },
+  {
+    id: 'AF', cx: 290, cy: 250, r: 30,
+    color: '#CC00FF', stepColor: '#CC00FF',   // Mace Windu purple
+    label: 'ROSE',
+    desc: ['Reads codebase;', 'decides on research'],
+  },
+  {
+    id: 'DR', cx: 510, cy: 140, r: 30,
+    color: '#00FF88', stepColor: '#00FF88',   // Yoda green
+    label: 'ROSE RESEARCH',
+    desc: ['Deep research via', 'Gemini relay (conditional)'],
+    conditional: true,
+  },
+  {
+    id: 'BI', cx: 510, cy: 360, r: 30,
+    color: '#FF2222', stepColor: '#FF2222',   // Sith red
+    label: 'ROSE BACKLOG',
+    desc: ['Inspect backlog issues'],
+  },
+  {
+    id: 'CONV', cx: 700, cy: 250, r: 22,
+    color: '#E8E8FF', stepColor: '#E8E8FF',   // silver-white
+    label: '',
+    desc: [],
+    convergence: true,
+  },
+];
 
-const STEP_LABELS = {
-  E1:'Feature idea',    E2:'Bug report',      E3:'Dependency upg.',
-  E4:'Spike / invest.', E5:'Autonomous',
-  R1:'Clarify intent',  R2:'Requirements',    R3:'Issue matching',
-  R4:'Feasibility',     R5:'Spec reconcile',
-  D1:'Issue creation',  D2:'Worktree setup',  D3:'Implementation',
-  D4:'Verification',    D5:'Commit sorting',  D6:'PR creation',
-  D7:'Adjacent work',   P2:'Merge PR',
-  W1:'Write-up',        S1:'Stakeholder',
-};
+const NODE_MAP = Object.fromEntries(NODES.map(n => [n.id, n]));
 
-// ─── State machine layout ─────────────────────────────────────────────────────
-// Each node: cx/cy = centre. Rect = 82 × 26 px.
+// Edges: from → to, whether dashed, control points for cubic bezier
+const EDGES = [
+  // FP → AF
+  { id: 'fp-af', from: 'FP', to: 'AF', dashed: false,
+    d: 'M 130,250 C 175,250 225,250 260,250' },
+  // AF → DR (dashed — conditional on codebase read)
+  { id: 'af-dr', from: 'AF', to: 'DR', dashed: true,
+    d: 'M 312,237 C 360,185 440,162 480,158' },
+  // AF → BI
+  { id: 'af-bi', from: 'AF', to: 'BI', dashed: false,
+    d: 'M 312,263 C 360,315 440,338 480,342' },
+  // DR → CONV (dashed)
+  { id: 'dr-conv', from: 'DR', to: 'CONV', dashed: true,
+    d: 'M 540,158 C 615,170 668,210 678,242' },
+  // BI → CONV (dashed)
+  { id: 'bi-conv', from: 'BI', to: 'CONV', dashed: true,
+    d: 'M 540,342 C 615,330 668,290 678,258' },
+];
 
-const NW = 82, NH = 26;
+// ─── Event parsing ──────────────────────────────────────────────────────────
 
-const SM = {
-  E1:{cx:52, cy:36},  E2:{cx:142,cy:36},  E3:{cx:232,cy:36},
-  E4:{cx:52, cy:68},  E5:{cx:142,cy:68},
-  R1:{cx:190,cy:120}, R2:{cx:190,cy:158}, R3:{cx:190,cy:196},
-  R4:{cx:190,cy:234}, R5:{cx:190,cy:272},
-  W1:{cx:88, cy:340},
-  D1:{cx:302,cy:340}, D2:{cx:302,cy:378}, D3:{cx:302,cy:416},
-  D4:{cx:302,cy:454}, D5:{cx:302,cy:492}, D6:{cx:302,cy:530},
-  D7:{cx:302,cy:568}, P2:{cx:302,cy:606},
-  S1:{cx:20, cy:196},
-};
+function deriveNodeStates(events) {
+  const active = new Set();
+  const completed = new Set();
 
-const DIA = { cx:190, cy:308, r:13 }; // decision diamond
+  for (const ev of events) {
+    if (ev.event === 'step.enter') {
+      active.add(ev.step);
+      completed.delete(ev.step);
+    } else if (ev.event === 'step.exit') {
+      active.delete(ev.step);
+      completed.add(ev.step);
+    }
+  }
 
-const nl = (c) => SM[c].cx;          // node left-centre x
-const nr = (c) => SM[c].cx + NW/2;   // node right edge x
-const nle = (c) => SM[c].cx - NW/2;  // node left edge x
-const nt = (c) => SM[c].cy - NH/2;   // node top edge y
-const nb = (c) => SM[c].cy + NH/2;   // node bottom edge y
-const nm = (c) => SM[c].cy;          // node mid y
-const nc = (c) => SM[c].cx;          // node centre x
+  const states = {};
+  for (const n of NODES) {
+    if (active.has(n.id)) states[n.id] = 'active';
+    else if (completed.has(n.id)) states[n.id] = 'completed';
+    else states[n.id] = 'idle';
+  }
 
-// ─── Sequence diagram constants ───────────────────────────────────────────────
+  // DR is conditional — only required if it was ever launched
+  const drLaunched = events.some(ev => ev.event === 'step.enter' && ev.step === 'DR');
+  const required = drLaunched ? ['DR', 'BI'] : ['BI'];
 
-const ACTORS  = ['user','orchestrator','analyst','engineer','git','github'];
-const ACTOR_X = { user:75, orchestrator:195, analyst:330, engineer:460, git:570, github:680 };
-const SEQ_W   = 760;
-const ROW_H   = 36;
-const HDR_H   = 56;
+  // CONV lights up when all launched parallel agents complete
+  if (required.every(s => completed.has(s))) {
+    states['CONV'] = 'active';
+  }
+  if (completed.has('AF') && required.every(s => completed.has(s))) {
+    states['CONV'] = 'completed';
+  }
 
-function ax(name) {
-  return ACTOR_X[name] ?? 680;
+  return states;
 }
 
-// ─── Hooks ────────────────────────────────────────────────────────────────────
-
-function useSessions() {
-  const [sessions, setSessions] = useState({});
-
-  useEffect(() => {
-    fetch('/api/sessions')
-      .then(r => r.json())
-      .then(data => {
-        const m = {};
-        data.forEach(s => { m[s.session_id] = s; });
-        setSessions(m);
-      })
-      .catch(() => {});
-
-    let ws;
-    function connect() {
-      ws = new WebSocket(`ws://${location.host}/ws`);
-      ws.onmessage = e => {
-        const data = JSON.parse(e.data);
-        const arr = Array.isArray(data) ? data : [data];
-        setSessions(prev => {
-          const next = { ...prev };
-          arr.forEach(s => { next[s.session_id] = { ...next[s.session_id], ...s }; });
-          return next;
+// Map raw events → sequence diagram messages
+function deriveMessages(events) {
+  const msgs = [];
+  for (const ev of events) {
+    switch (ev.event) {
+      case 'message.user':
+        msgs.push({
+          from: 'user', to: 'rose',
+          label: (ev.payload?.preview || 'Message').slice(0, 60),
+          ts: ev.ts, color: '#F472B6',
         });
-      };
-      ws.onclose = () => setTimeout(connect, 3000);
-    }
-    connect();
-    return () => ws && ws.close();
-  }, []);
-
-  return sessions;
-}
-
-function useEventStream(sessionId) {
-  const [events, setEvents] = useState([]);
-
-  useEffect(() => {
-    setEvents([]);
-    if (!sessionId) return;
-    const ws = new WebSocket(`ws://${location.host}/ws/events/${sessionId}`);
-    ws.onmessage = e => {
-      try { setEvents(prev => [...prev, JSON.parse(e.data)]); } catch(_) {}
-    };
-    return () => ws.close();
-  }, [sessionId]);
-
-  return events;
-}
-
-// ─── Utilities ────────────────────────────────────────────────────────────────
-
-function repoName(path) {
-  return path ? path.split('/').filter(Boolean).pop() || path : 'unknown';
-}
-
-function branchSlug(branch) {
-  const m = branch && branch.match(/^feat\/\d+-(.+)$/);
-  return m ? m[1] : (branch || '');
-}
-
-function sessionTitle(s) {
-  // Resolution priority: explicit title field > branch slug > truncated session ID.
-  // The title field itself is written by the hook (first user message) and may be
-  // overwritten by agents with a feature title or GitHub issue title.
-  if (s.title && s.title.trim()) return s.title.trim();
-  const slug = branchSlug(s.branch);
-  if (slug) return slug.replace(/-/g, ' ');
-  return s.session_id.slice(0, 8);
-}
-
-function sessionSubline(s) {
-  if (s.status === 'in_progress') {
-    if (s.current_step) return `${s.current_step} · ${STEP_LABELS[s.current_step] || ''}`;
-    return 'running';
-  }
-  const map = { delivery: 'delivered', investigation: 'write-up', abandoned: 'abandoned', in_progress: 'interrupted' };
-  return map[s.outcome] || 'ended';
-}
-
-function deriveActiveStep(events) {
-  // Returns { step, agent } for the most recent open step.enter, or { step: null, agent: null }.
-  const stack = []; // each entry: { step, agent }
-  for (const e of events) {
-    if (e.event === 'step.enter') {
-      const s = e.step || e.payload?.step;
-      if (s) stack.push({ step: s, agent: e.agent || null });
-    } else if (e.event === 'step.exit' && stack.length) {
-      stack.pop();
+        break;
+      case 'step.enter':
+        if (ev.step === 'FP') {
+          msgs.push({ from: 'user', to: 'rose', label: 'Feature prompt', ts: ev.ts, color: '#F472B6' });
+        } else if (ev.step === 'AF') {
+          msgs.push({ from: 'rose', to: 'rose', label: 'Reading codebase…', ts: ev.ts, color: '#A855F7', self: true });
+        } else if (ev.step === 'DR') {
+          msgs.push({ from: 'rose', to: 'rose-research', label: 'Launch: deep research', ts: ev.ts, color: '#A855F7' });
+        } else if (ev.step === 'BI') {
+          msgs.push({ from: 'rose', to: 'rose-backlog', label: 'Launch: backlog inspect', ts: ev.ts, color: '#A855F7' });
+        }
+        break;
+      case 'step.exit':
+        if (ev.step === 'DR') {
+          msgs.push({ from: 'rose-research', to: 'rose', label: 'Research complete', ts: ev.ts, color: '#00FF88' });
+        } else if (ev.step === 'BI') {
+          msgs.push({ from: 'rose-backlog', to: 'rose', label: 'Backlog complete', ts: ev.ts, color: '#FF2222' });
+        }
+        break;
+      case 'message.agent':
+        msgs.push({ from: 'rose', to: 'user', label: (ev.payload?.preview || 'Response').slice(0, 60), ts: ev.ts, color: '#CC00FF' });
+        break;
+      default:
+        break;
     }
   }
-  const top = stack[stack.length - 1];
-  return top ? { step: top.step, agent: top.agent } : { step: null, agent: null };
+  return msgs;
 }
 
-// ─── Sidebar ──────────────────────────────────────────────────────────────────
-
-function StatusDot({ status, outcome }) {
-  if (status === 'in_progress') return <span className="status-dot status-dot--active" />;
-  const cls = outcome === 'delivery'      ? 'status-dot--delivery'
-            : outcome === 'investigation' ? 'status-dot--investigation'
-            : 'status-dot--abandoned';
-  return <span className={`status-dot ${cls}`} />;
+function fmtTs(iso) {
+  if (!iso) return '';
+  try {
+    return new Date(iso).toLocaleTimeString('en-GB', { hour12: false });
+  } catch {
+    return '';
+  }
 }
 
-function Sidebar({ sessions, selectedId, onSelect }) {
-  const byRepo = useMemo(() => {
-    const m = {};
-    Object.values(sessions)
-      .sort((a, b) => {
-        // Active first, then by started_at descending.
-        if (a.status !== b.status) return a.status === 'in_progress' ? -1 : 1;
-        if (a.started_at && b.started_at) return a.started_at > b.started_at ? -1 : 1;
-        return 0;
-      })
-      .forEach(s => {
-        const k = s.repository || 'unknown';
-        (m[k] = m[k] || []).push(s);
-      });
-    return m;
-  }, [sessions]);
+// ─── State Machine ──────────────────────────────────────────────────────────
 
-  const isEmpty = Object.keys(byRepo).length === 0;
-
+function NodePulseRings({ node }) {
+  const color = node.stepColor;
+  const isLarge = node.r >= 38;
   return (
-    <aside id="sidebar">
-      <h1>rose observe</h1>
-      {isEmpty
-        ? <div className="sidebar-empty">no sessions</div>
-        : Object.entries(byRepo).map(([repo, list]) => (
-          <div className="project" key={repo}>
-            <div className="project-title">{repoName(repo)}</div>
-            {list.map(s => (
-              <div
-                key={s.session_id}
-                className={`issue-row${s.session_id === selectedId ? ' selected' : ''}${s.status !== 'in_progress' ? ' issue-row--ended' : ''}`}
-                onClick={() => onSelect(s.session_id)}
-              >
-                <StatusDot status={s.status} outcome={s.outcome} />
-                <div className="issue-row-content">
-                  <span className="issue-row-title">{sessionTitle(s)}</span>
-                  <span className="issue-row-sub">{sessionSubline(s)}</span>
-                </div>
-                {s.entry_point === 'E5' && <span className="rose-icon" title="Rose-initiated (E5)">&#x2605;</span>}
-              </div>
-            ))}
-          </div>
-        ))
-      }
-    </aside>
+    <>
+      <circle
+        cx={node.cx} cy={node.cy} r={node.r}
+        fill="none" stroke={color} strokeWidth={2} opacity={0}
+        className={isLarge ? 'pulse-ring-1' : 'pulse-ring-sm-1'}
+      />
+      <circle
+        cx={node.cx} cy={node.cy} r={node.r}
+        fill="none" stroke={color} strokeWidth={1.5} opacity={0}
+        className={isLarge ? 'pulse-ring-2' : 'pulse-ring-sm-2'}
+      />
+    </>
   );
 }
 
-// ─── State Machine ────────────────────────────────────────────────────────────
+function SMNode({ node, state, filterId }) {
+  const isActive = state === 'active';
+  const isCompleted = state === 'completed';
+  const color = node.stepColor;
+  const labelLines = node.label.split('\n');
 
-function SMNode({ code, activeStep, activeAgent }) {
-  const { cx, cy } = SM[code];
-  const on = activeStep === code;
-  const colour = on ? actorColour(activeAgent) : null;
-
-  const rectStyle = on
-    ? { fill: colour, stroke: colour }
-    : {};
-  const textStyle = on
-    ? { fill: '#050814' }
-    : {};
+  // Idle: clearly visible ring + fill. Completed: brighter. Active: full saber glow.
+  const fillOpacity   = isActive ? 0.35 : isCompleted ? 0.22 : 0.18;
+  const strokeOpacity = isActive ? 1    : isCompleted ? 0.85 : 0.65;
+  const strokeWidth   = isActive ? 2.5  : 1.5;
+  // Labels always white — colour only used as accent for active state
+  const textFill = isActive ? '#ffffff' : isCompleted ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.8)';
+  const descFill = isActive ? 'rgba(255,255,255,0.75)' : 'rgba(255,255,255,0.55)';
 
   return (
-    <g className={on ? 'sm-node-active' : ''} style={on ? { '--node-colour': colour } : {}}>
-      <rect x={cx-NW/2} y={cy-NH/2} width={NW} height={NH} className="sm-node-rect" rx={0}
-        style={rectStyle} />
-      <text x={cx} y={cy-4}  textAnchor="middle" className="sm-node-code" style={textStyle}>{code}</text>
-      <text x={cx} y={cy+8}  textAnchor="middle" className="sm-node-desc" style={textStyle}>{STEP_LABELS[code]||''}</text>
+    <g filter={isActive ? `url(#${filterId})` : undefined}>
+      {isActive && <NodePulseRings node={node} />}
+
+      {/* Soft inner glow for active nodes */}
+      {isActive && !node.convergence && (
+        <circle
+          cx={node.cx} cy={node.cy} r={node.r + 4}
+          fill={color} fillOpacity={0.12}
+          stroke="none"
+        />
+      )}
+
+      {/* Main circle */}
+      <circle
+        cx={node.cx} cy={node.cy} r={node.r}
+        fill={node.convergence ? 'none' : color}
+        fillOpacity={node.convergence ? 0 : fillOpacity}
+        stroke={color}
+        strokeWidth={strokeWidth}
+        strokeOpacity={strokeOpacity}
+        className={isActive ? 'node-active-circle' : ''}
+      />
+
+      {/* Labels above */}
+      {node.label && labelLines.map((line, i) => (
+        <text
+          key={i}
+          x={node.cx}
+          y={node.cy - node.r - (labelLines.length > 1 ? 24 : 14) + i * 15}
+          textAnchor="middle"
+          fill={textFill}
+          fontSize={10}
+          fontFamily="IBM Plex Mono, monospace"
+          fontWeight={600}
+          letterSpacing="0.1em"
+        >
+          {line}
+        </text>
+      ))}
+
+      {/* Descriptions below */}
+      {node.desc.map((line, i) => (
+        <text
+          key={i}
+          x={node.cx}
+          y={node.cy + node.r + 18 + i * 14}
+          textAnchor="middle"
+          fill={descFill}
+          fontSize={9}
+          fontFamily="IBM Plex Mono, monospace"
+        >
+          {line}
+        </text>
+      ))}
     </g>
   );
 }
 
-function StateMachine({ activeStep, activeAgent }) {
+function StateMachine({ nodeStates }) {
+  // Which edges are lit (from-node active or completed)
+  const activeEdgeIds = new Set();
+  const edgeColorMap = {};
+  for (const edge of EDGES) {
+    const fromNode = NODE_MAP[edge.from];
+    const fromState = nodeStates[edge.from] || 'idle';
+    if (fromState === 'active' || fromState === 'completed') {
+      activeEdgeIds.add(edge.id);
+      edgeColorMap[edge.id] = fromNode.stepColor;
+    }
+  }
+
   return (
-    <svg viewBox="0 0 380 660" style={{width:'100%', maxWidth:380, overflow:'visible'}}>
+    <svg viewBox="0 0 800 520" className="sm-svg" style={{ display: 'block' }}>
       <defs>
-        <marker id="sm-arr" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
-          <path d="M0,0 L6,3 L0,6 z" fill="#1a2035" />
-        </marker>
-        <marker id="sm-arr-s1" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
-          <path d="M0,0 L6,3 L0,6 z" fill="#4b5563" opacity="0.5" />
-        </marker>
+        {/* Per-colour saber glow filters */}
+        {NODES.map(node => (
+          <filter key={node.id} id={`glow-${node.id}`} x="-80%" y="-80%" width="260%" height="260%">
+            <feGaussianBlur in="SourceGraphic" stdDeviation="6" result="blur" />
+            <feMerge>
+              <feMergeNode in="blur" />
+              <feMergeNode in="blur" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+        ))}
       </defs>
 
-      {/* Group labels */}
-      <text x={142} y={14}  className="sm-group-label" textAnchor="middle">entry points</text>
-      <text x={190} y={103} className="sm-group-label" textAnchor="middle">requirements</text>
-      <text x={88}  y={323} className="sm-group-label" textAnchor="middle">investigation</text>
-      <text x={302} y={323} className="sm-group-label" textAnchor="middle">delivery</text>
+      {/* Space-black background */}
+      <rect width="800" height="520" fill="#03030A" />
 
-      {/* E → R1 */}
-      {['E1','E2','E3','E4','E5'].map(e =>
-        <path key={e} d={`M${nc(e)} ${nb(e)} L${nc('R1')} ${nt('R1')}`}
-          className="sm-edge" markerEnd="url(#sm-arr)" fill="none" />
-      )}
+      {/* Edges */}
+      {EDGES.map(edge => {
+        const isActive = activeEdgeIds.has(edge.id);
+        const edgeColor = edgeColorMap[edge.id] || 'rgba(255,255,255,0.15)';
+        return (
+          <path
+            key={edge.id}
+            d={edge.d}
+            fill="none"
+            stroke={isActive ? edgeColor : 'rgba(255,255,255,0.12)'}
+            strokeWidth={isActive ? 1.5 : 1}
+            strokeOpacity={isActive ? 0.7 : 1}
+            strokeDasharray={edge.dashed ? '6 4' : 'none'}
+            className={isActive && edge.dashed ? 'edge-active' : ''}
+          />
+        );
+      })}
 
-      {/* Requirements chain */}
-      {[['R1','R2'],['R2','R3'],['R3','R4'],['R4','R5']].map(([a,b]) =>
-        <path key={a+b} d={`M${nc(a)} ${nb(a)} L${nc(b)} ${nt(b)}`}
-          className="sm-edge" markerEnd="url(#sm-arr)" fill="none" />
-      )}
-
-      {/* Self-loops (left arc) */}
-      {['R1','R2','R3','R5'].map(r =>
-        <path key={r+'-self'}
-          d={`M${nle(r)} ${nm(r)-5} C${nle(r)-24} ${nm(r)-20} ${nle(r)-24} ${nm(r)+20} ${nle(r)} ${nm(r)+5}`}
-          className="sm-edge" markerEnd="url(#sm-arr)" fill="none" />
-      )}
-
-      {/* R4 → R2 (feasibility loop, arc left) */}
-      <path d={`M${nle('R4')} ${nm('R4')} C${nle('R4')-44} ${nm('R4')} ${nle('R2')-44} ${nm('R2')} ${nle('R2')} ${nm('R2')}`}
-        className="sm-edge" markerEnd="url(#sm-arr)" fill="none" />
-
-      {/* R5 → decision */}
-      <path d={`M${nc('R5')} ${nb('R5')} L${DIA.cx} ${DIA.cy-DIA.r}`}
-        className="sm-edge" markerEnd="url(#sm-arr)" fill="none" />
-
-      {/* Decision → W1, D1 */}
-      <path d={`M${DIA.cx-DIA.r} ${DIA.cy} L${nc('W1')} ${nt('W1')}`}
-        className="sm-edge" markerEnd="url(#sm-arr)" fill="none" />
-      <path d={`M${DIA.cx+DIA.r} ${DIA.cy} L${nc('D1')} ${nt('D1')}`}
-        className="sm-edge" markerEnd="url(#sm-arr)" fill="none" />
-
-      {/* Delivery chain */}
-      {[['D1','D2'],['D2','D3'],['D3','D4'],['D4','D5'],['D5','D6'],['D6','D7'],['D7','P2']].map(([a,b]) =>
-        <path key={a+b} d={`M${nc(a)} ${nb(a)} L${nc(b)} ${nt(b)}`}
-          className="sm-edge" markerEnd="url(#sm-arr)" fill="none" />
-      )}
-
-      {/* D4 → D3 loop (arc right) */}
-      <path d={`M${nr('D4')} ${nm('D4')} C${nr('D4')+30} ${nm('D4')} ${nr('D3')+30} ${nm('D3')} ${nr('D3')} ${nm('D3')}`}
-        className="sm-edge" markerEnd="url(#sm-arr)" fill="none" />
-
-      {/* D4 → R2 requirement failure (long arc left) */}
-      <path d={`M${nle('D4')} ${nm('D4')} C${nle('D4')-55} ${nm('D4')} ${nle('R2')-55} ${nm('R2')} ${nle('R2')} ${nm('R2')}`}
-        className="sm-edge" markerEnd="url(#sm-arr)" fill="none" />
-
-      {/* D7 → D1 new issue (arc right, up) */}
-      <path d={`M${nr('D7')} ${nm('D7')} C${nr('D7')+40} ${nm('D7')} ${nr('D1')+40} ${nm('D1')} ${nr('D1')} ${nm('D1')}`}
-        className="sm-edge" markerEnd="url(#sm-arr)" fill="none" />
-
-      {/* S1 dashed fan-out */}
-      {['R1','R2','R3','R4','R5','D1','D3','D6'].map(t =>
-        <path key={'S1-'+t}
-          d={`M${nr('S1')} ${nm('S1')} C${nr('S1')+28} ${nm('S1')} ${nle(t)-8} ${nm(t)} ${nle(t)} ${nm(t)}`}
-          className="sm-edge-s1" markerEnd="url(#sm-arr-s1)" fill="none" />
-      )}
-
-      {/* Decision diamond */}
-      <polygon
-        className="sm-diamond"
-        points={`${DIA.cx},${DIA.cy-DIA.r} ${DIA.cx+DIA.r},${DIA.cy} ${DIA.cx},${DIA.cy+DIA.r} ${DIA.cx-DIA.r},${DIA.cy}`}
-      />
-
-      {/* Terminals */}
-      <line x1={nc('W1')} y1={nb('W1')} x2={nc('W1')} y2={nb('W1')+16} className="sm-edge" />
-      <circle cx={nc('W1')} cy={nb('W1')+22} r={5} className="sm-terminal" />
-      <line x1={nc('P2')} y1={nb('P2')} x2={nc('P2')} y2={nb('P2')+16} className="sm-edge" />
-      <circle cx={nc('P2')} cy={nb('P2')+22} r={5} className="sm-terminal" />
-
-      {/* Nodes (drawn last, on top of edges) */}
-      {Object.keys(SM).map(code =>
-        <SMNode key={code} code={code} activeStep={activeStep} activeAgent={activeAgent} />
-      )}
+      {/* Nodes (rendered after edges so they sit on top) */}
+      {NODES.map(node => (
+        <SMNode
+          key={node.id}
+          node={node}
+          state={nodeStates[node.id] || 'idle'}
+          filterId={`glow-${node.id}`}
+        />
+      ))}
     </svg>
   );
 }
 
-// ─── Sequence Diagram ─────────────────────────────────────────────────────────
+// ─── Sequence Diagram ───────────────────────────────────────────────────────
 
-function eventToRow(evt) {
-  const { event, agent, step, payload } = evt;
-  switch (event) {
-    case 'session.start':
-      return { kind:'banner', text:'── session started ──', dim:true };
-    case 'session.end':
-      return { kind:'banner', text:`── session ended · ${payload?.outcome||''} ──`, dim:true };
-    case 'step.enter':
-      return { kind:'arrow',  from:'orchestrator', to:agent||'orchestrator',
-               label:`${step}: ${STEP_LABELS[step]||step}`, openStep:step };
-    case 'step.exit':
-      return { kind:'return', from:agent||'orchestrator', to:'orchestrator',
-               label:`done · ${payload?.outcome||''}`, closeStep:step };
-    case 'message.user':
-      return { kind:'arrow',  from:'user', to:agent||'orchestrator',
-               label:(payload?.preview||'').slice(0,46) };
-    case 'message.agent':
-      return { kind:'return', from:agent||'orchestrator', to:'user',
-               label:(payload?.preview||'').slice(0,46) };
-    case 'tool.call':
-    case 'tool.result':
-      return null;
-    case 'interrupt.s1':
-      return { kind:'interrupt', text:`S1 · ${payload?.note||'stakeholder input'}` };
-    case 'error':
-      return { kind:'banner', text:`error · ${payload?.message||''}`, error:true };
-    default:
-      return null;
-  }
-}
+const COL_W = 140;  // width per actor column
+const ROW_H = 58;
+const HEADER_H = 82;
+const TS_W = 58;
+const PADDING_L = 8;
 
-function SequenceDiagram({ events, activeAgent, activeStep }) {
-  const containerRef = useRef(null);
+function SequenceDiagram({ events }) {
+  const seqRef = useRef(null);
+  const messages = useMemo(() => deriveMessages(events), [events]);
+  const prevLen = useRef(0);
 
   useEffect(() => {
-    const el = containerRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [events.length]);
+    if (messages.length > prevLen.current && seqRef.current) {
+      seqRef.current.scrollTop = seqRef.current.scrollHeight;
+    }
+    prevLen.current = messages.length;
+  }, [messages.length]);
 
-  const { rows, bars } = useMemo(() => {
-    const rows = [];
-    const bars = [];          // {actor, startRow, endRow|null}
-    const open = {};          // step -> bar index
-
-    events.forEach(evt => {
-      const row = eventToRow(evt);
-      if (!row) return;
-      const idx = rows.length;
-      rows.push(row);
-
-      if (row.openStep) {
-        const bi = bars.length;
-        bars.push({ actor: row.to, startRow: idx, endRow: null });
-        open[row.openStep] = bi;
-      }
-      if (row.closeStep && open[row.closeStep] != null) {
-        bars[open[row.closeStep]].endRow = idx;
-        delete open[row.closeStep];
-      }
-    });
-    return { rows, bars };
-  }, [events]);
-
-  const totalH  = HDR_H + rows.length * ROW_H + 48;
-  const C = {
-    border:  '#1a2035',
-    dim:     '#1e293b',
-    text:    '#94a3b8',
-    dimText: '#4b5563',
-    accent:  '#f59e0b',
-    return:  '#475569',
-    arrow:   '#64748b',
-    font:    'IBM Plex Mono, Courier New, monospace',
-  };
-
-  const activeColour = actorColour(activeAgent);
-
-  function rowY(i) { return HDR_H + i * ROW_H + ROW_H / 2; }
-
-  // Per-actor lifeline colour: active actor gets their colour; others stay dim.
-  function lifelineColour(actor) {
-    return actor === activeAgent ? activeColour : C.dim;
-  }
-
-  // Arrow/return colour: use actor colour when the involved actor is the active one.
-  function arrowColour(from, to, isReturn) {
-    const involvedActor = isReturn ? from : to;
-    if (involvedActor === activeAgent) return activeColour;
-    return isReturn ? C.return : C.arrow;
-  }
+  const totalW = TS_W + PADDING_L + ACTORS.length * COL_W;
+  const svgH = HEADER_H + messages.length * ROW_H;
 
   return (
-    <div id="sequence-panel" ref={containerRef}>
-      <svg width={SEQ_W} height={totalH} style={{display:'block', minWidth:SEQ_W}}>
-        <defs>
-          {/* Per-actor filled arrowheads */}
-          {ACTORS.map(a => {
-            const col = lifelineColour(a);
-            return (
-              <marker key={`seq-f-${a}`} id={`seq-f-${a}`}
-                markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
-                <path d="M0,0 L7,3.5 L0,7 z" fill={col} />
-              </marker>
-            );
-          })}
-          {/* Per-actor open arrowheads */}
-          {ACTORS.map(a => {
-            const col = lifelineColour(a);
-            return (
-              <marker key={`seq-o-${a}`} id={`seq-o-${a}`}
-                markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-                <path d="M0,0 L7,4 L0,8" fill="none" stroke={col} strokeWidth="1.2" />
-              </marker>
-            );
-          })}
-          {/* Fallback markers */}
-          <marker id="seq-f" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
-            <path d="M0,0 L7,3.5 L0,7 z" fill={C.arrow} />
-          </marker>
-          <marker id="seq-o" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-            <path d="M0,0 L7,4 L0,8" fill="none" stroke={C.return} strokeWidth="1.2" />
-          </marker>
-        </defs>
-
+    <div id="seq-container" ref={seqRef} style={{ overflow: 'auto', height: '100%' }}>
+      <svg
+        width="100%"
+        viewBox={`0 0 ${totalW} ${Math.max(svgH, 300)}`}
+        style={{ minHeight: '300px', display: 'block' }}
+        fontFamily="IBM Plex Mono, monospace"
+      >
         {/* Actor headers */}
-        {ACTORS.map(a => {
-          const isActive = a === activeAgent;
-          const col = isActive ? activeColour : C.dimText;
+        {ACTORS.map((actor, i) => {
+          const cx = TS_W + PADDING_L + i * COL_W + COL_W / 2;
           return (
-            <g key={a}>
-              <text x={ax(a)} y={26} textAnchor="middle"
-                style={{fill:col, fontFamily:C.font, fontSize:9, letterSpacing:'0.12em',
-                        fontWeight: isActive ? 700 : 400}}>
-                {a}
+            <g key={actor.id}>
+              {/* Saber glow halo */}
+              <circle cx={cx} cy={30} r={22} fill={actor.color} fillOpacity={0.08} stroke="none" />
+              {/* Outer ring */}
+              <circle cx={cx} cy={30} r={19} fill="none" stroke={actor.color} strokeWidth={1} strokeOpacity={0.4} />
+              {/* Inner filled circle */}
+              <circle cx={cx} cy={30} r={17} fill={actor.color} fillOpacity={0.2} stroke={actor.color} strokeWidth={2} strokeOpacity={0.9} />
+              {/* Initials */}
+              <text x={cx} y={35} textAnchor="middle" fill={actor.color} fontSize={11} fontWeight={700} letterSpacing="0.04em" fontFamily="IBM Plex Mono, monospace">
+                {actor.label.split(' ').map(w => w[0]).join('').slice(0, 2)}
               </text>
-              {isActive && activeStep && (
-                <text x={ax(a)} y={40} textAnchor="middle"
-                  className="seq-status-pulse"
-                  style={{fill:activeColour, fontFamily:C.font, fontSize:8, fontWeight:700}}>
-                  {activeStep}
-                </text>
-              )}
-              {/* Lifeline */}
-              <line x1={ax(a)} y1={40} x2={ax(a)} y2={totalH}
-                stroke={lifelineColour(a)}
-                strokeWidth={isActive ? 1.5 : 1}
-                strokeDasharray="4 4" />
+              {/* Actor label below — always white so it's actually readable */}
+              <text x={cx} y={60} textAnchor="middle" fill="rgba(255,255,255,0.85)" fontSize={9} letterSpacing="0.1em" fontFamily="IBM Plex Mono, monospace">
+                {actor.label}
+              </text>
             </g>
           );
         })}
 
-        {/* Header rule */}
-        <line x1={0} y1={40} x2={SEQ_W} y2={40} stroke={C.border} strokeWidth={1} />
-
-        {/* Activation bars */}
-        {bars.map((b, i) => {
-          const y1 = HDR_H + b.startRow * ROW_H;
-          const y2 = b.endRow != null ? HDR_H + b.endRow * ROW_H + ROW_H/2 : totalH - 24;
-          const barColour = b.actor === activeAgent ? activeColour : C.accent;
+        {/* Lifelines */}
+        {ACTORS.map((actor, i) => {
+          const cx = TS_W + PADDING_L + i * COL_W + COL_W / 2;
           return (
-            <rect key={i} x={ax(b.actor)-4} y={y1} width={8} height={y2-y1}
-              fill={barColour} fillOpacity={0.13} />
+            <line
+              key={actor.id}
+              x1={cx} y1={HEADER_H}
+              x2={cx} y2={Math.max(svgH, 300)}
+              stroke={actor.color}
+              strokeWidth={1}
+              strokeOpacity={0.18}
+              strokeDasharray="3 5"
+            />
           );
         })}
 
-        {/* Event rows */}
-        {rows.map((row, i) => {
-          const cy = rowY(i);
+        {/* Separator */}
+        <line
+          x1={0} y1={HEADER_H - 2}
+          x2={totalW} y2={HEADER_H - 2}
+          stroke="rgba(255,255,255,0.06)" strokeWidth={1}
+        />
 
-          if (row.kind === 'banner') {
-            return (
-              <g key={i}>
-                <rect x={0} y={cy-11} width={SEQ_W} height={22}
-                  fill={row.error ? '#100404' : '#080b12'} />
-                <line x1={0} y1={cy-11} x2={SEQ_W} y2={cy-11} stroke={C.border} strokeWidth={1} />
-                <text x={SEQ_W/2} y={cy+4} textAnchor="middle"
-                  style={{fill: row.error ? '#ef4444' : C.dimText,
-                           fontFamily:C.font, fontSize:9, letterSpacing:'0.1em'}}>
-                  {row.text}
-                </text>
-              </g>
-            );
-          }
+        {/* Message rows */}
+        {messages.map((msg, idx) => {
+          const y = HEADER_H + idx * ROW_H + ROW_H / 2;
+          const fromIdx = ACTORS.findIndex(a => a.id === msg.from);
+          const toIdx = ACTORS.findIndex(a => a.id === msg.to);
+          const fromX = TS_W + PADDING_L + fromIdx * COL_W + COL_W / 2;
+          const toX = TS_W + PADDING_L + toIdx * COL_W + COL_W / 2;
+          const color = msg.color;
+          const isSelf = msg.self || msg.from === msg.to;
 
-          if (row.kind === 'interrupt') {
-            return (
-              <g key={i}>
-                <rect x={0} y={cy-11} width={SEQ_W} height={22} fill="#100c00" />
-                <line x1={0} y1={cy-11} x2={SEQ_W} y2={cy-11} stroke={C.accent} strokeWidth={1} strokeOpacity={0.3} />
-                <text x={SEQ_W/2} y={cy+4} textAnchor="middle"
-                  style={{fill:C.accent, fontFamily:C.font, fontSize:9, letterSpacing:'0.1em'}}>
-                  {row.text}
-                </text>
-              </g>
-            );
-          }
+          return (
+            <g key={idx} style={{ animation: 'row-in 0.25s ease-out' }}>
+              {/* Timestamp */}
+              <text
+                x={4} y={y + 4}
+                fill="rgba(255,255,255,0.5)"
+                fontSize={9}
+                fontFamily="IBM Plex Mono, monospace"
+              >
+                {fmtTs(msg.ts)}
+              </text>
 
-          if (row.kind === 'arrow' || row.kind === 'return') {
-            const fx = ax(row.from);
-            const tx = ax(row.to);
-            if (fx === tx) return null;
-            const isRet = row.kind === 'return';
-            const mid   = (fx + tx) / 2;
-            const lineCol = arrowColour(row.from, row.to, isRet);
-            // Use per-actor marker for the destination (arrow) or source (return)
-            const markerActor = isRet ? row.from : row.to;
-            const markerId = isRet ? `seq-o-${markerActor}` : `seq-f-${markerActor}`;
-            return (
-              <g key={i}>
-                <line x1={fx} y1={cy} x2={tx} y2={cy}
-                  stroke={lineCol} strokeWidth={1}
-                  markerEnd={`url(#${markerId})`}
-                  strokeDasharray={isRet ? '4 3' : undefined}
-                />
-                <text x={mid} y={cy-5} textAnchor="middle"
-                  style={{fill: lineCol === C.return || lineCol === C.arrow ? C.text : lineCol,
-                          fontFamily:C.font, fontSize:9}}>
-                  {row.label}
-                </text>
-              </g>
-            );
-          }
+              {/* Active lifeline highlight */}
+              <rect
+                x={TS_W + PADDING_L + fromIdx * COL_W + COL_W / 2 - 3}
+                y={HEADER_H + idx * ROW_H}
+                width={6} height={ROW_H}
+                fill={color} fillOpacity={0.08}
+              />
 
-          return null;
+              {isSelf ? (
+                /* Self-message: bracket on the right of the lifeline */
+                <>
+                  <path
+                    d={`M ${fromX} ${y - 8} L ${fromX + 28} ${y - 8} L ${fromX + 28} ${y + 8} L ${fromX} ${y + 8}`}
+                    fill="none" stroke={color} strokeWidth={1} strokeOpacity={0.55}
+                  />
+                  <text x={fromX + 32} y={y + 4} fill={color} fillOpacity={1} fontSize={10} fontFamily="IBM Plex Mono, monospace">
+                    {msg.label}
+                  </text>
+                </>
+              ) : (
+                /* Arrow from → to */
+                <>
+                  {/* Glow copy (blurred, wider) */}
+                  <line
+                    x1={fromX} y1={y}
+                    x2={toX - (fromX < toX ? 6 : -6)} y2={y}
+                    stroke={color} strokeWidth={4} strokeOpacity={0.18}
+                  />
+                  {/* Main shaft */}
+                  <line
+                    x1={fromX} y1={y}
+                    x2={toX - (fromX < toX ? 6 : -6)} y2={y}
+                    stroke={color} strokeWidth={1.5} strokeOpacity={0.9}
+                  />
+                  {/* Arrowhead */}
+                  {fromX < toX ? (
+                    <polygon points={`${toX},${y} ${toX - 9},${y - 4} ${toX - 9},${y + 4}`} fill={color} />
+                  ) : (
+                    <polygon points={`${toX},${y} ${toX + 9},${y - 4} ${toX + 9},${y + 4}`} fill={color} />
+                  )}
+                  {/* Label */}
+                  <text
+                    x={(fromX + toX) / 2} y={y - 9}
+                    textAnchor="middle"
+                    fill="#ffffff" fillOpacity={0.9} fontSize={10}
+                    fontFamily="IBM Plex Mono, monospace"
+                  >
+                    {msg.label}
+                  </text>
+                </>
+              )}
+            </g>
+          );
         })}
+
+        {messages.length === 0 && (
+          <text
+            x={totalW / 2} y={200}
+            textAnchor="middle"
+            fill="rgba(0,180,255,0.5)"
+            fontSize={12} letterSpacing="0.25em"
+            fontFamily="IBM Plex Mono, monospace"
+          >
+            AWAITING EVENTS
+          </text>
+        )}
       </svg>
     </div>
   );
 }
 
-// ─── App ──────────────────────────────────────────────────────────────────────
+// ─── Sidebar ────────────────────────────────────────────────────────────────
+
+function Sidebar({ sessions, selectedId, onSelect }) {
+  const sorted = [...sessions].sort((a, b) => {
+    const ta = a.started_at || '';
+    const tb = b.started_at || '';
+    return tb.localeCompare(ta);
+  });
+
+  function sessionTitle(s) {
+    if (s.title) return s.title;
+    const b = s.branch || '';
+    if (b && b !== 'main' && b !== 'master') return b;
+    return s.session_id?.slice(0, 12) || 'session';
+  }
+
+  return (
+    <div id="sidebar">
+      <div id="sidebar-header">rose observe</div>
+      {sorted.length === 0 && (
+        <div className="sidebar-empty">no sessions</div>
+      )}
+      {sorted.map(s => (
+        <div
+          key={s.session_id}
+          className={`session-row ${s.session_id === selectedId ? 'selected' : ''}`}
+          onClick={() => onSelect(s.session_id)}
+        >
+          <div className={`session-row-dot ${s.status === 'in_progress' ? 'live' : ''}`} />
+          <div className="session-row-body">
+            <div className="session-row-title">{sessionTitle(s)}</div>
+            <div className="session-row-sub">
+              {s.current_step ? `↳ ${s.current_step}` : s.status}
+              {s.started_at ? `  ${fmtTs(s.started_at)}` : ''}
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── App ────────────────────────────────────────────────────────────────────
 
 function App() {
-  const sessions   = useSessions();
-  const [selId, setSelId] = useState(null);
-  const events     = useEventStream(selId);
-  const { step: activeStep, agent: activeAgent } = useMemo(() => deriveActiveStep(events), [events]);
+  const [sessions, setSessions] = useState([]);
+  const [selectedId, setSelectedId] = useState(null);
+  const [events, setEvents] = useState([]);
+
+  const sessionWsRef = useRef(null);
+  const eventWsRef = useRef(null);
+  const lastSeqRef = useRef(0);
+
+  // Connect to session list websocket
+  useEffect(() => {
+    function connect() {
+      const ws = new WebSocket(`${WS_BASE}/ws`);
+      sessionWsRef.current = ws;
+
+      ws.onmessage = (e) => {
+        try {
+          const data = JSON.parse(e.data);
+          if (Array.isArray(data)) {
+            setSessions(data);
+            // Auto-select the most recent in-progress session
+            setSelectedId(prev => {
+              if (prev) return prev;
+              const live = data.filter(s => s.status === 'in_progress');
+              live.sort((a, b) => (b.started_at || '').localeCompare(a.started_at || ''));
+              return live[0]?.session_id || data[0]?.session_id || null;
+            });
+          } else {
+            // Single session update
+            setSessions(prev => {
+              const idx = prev.findIndex(s => s.session_id === data.session_id);
+              if (idx >= 0) {
+                const next = [...prev];
+                next[idx] = data;
+                return next;
+              }
+              return [...prev, data];
+            });
+            // Auto-select if nothing is currently selected
+            setSelectedId(prev => prev || data.session_id);
+          }
+        } catch {}
+      };
+
+      ws.onclose = () => {
+        setTimeout(connect, 2000);
+      };
+    }
+    connect();
+    return () => sessionWsRef.current?.close();
+  }, []);
+
+  // Connect to event stream for selected session
+  useEffect(() => {
+    eventWsRef.current?.close();
+    if (!selectedId) return;
+
+    function connectEvents() {
+      // Reset on every (re)connect — server always replays from seq 1
+      setEvents([]);
+      lastSeqRef.current = 0;
+
+      const ws = new WebSocket(`${WS_BASE}/ws/events/${selectedId}`);
+      eventWsRef.current = ws;
+
+      ws.onmessage = (e) => {
+        try {
+          const ev = JSON.parse(e.data);
+          if (ev.seq != null && ev.seq <= lastSeqRef.current) return;
+          if (ev.seq != null) lastSeqRef.current = ev.seq;
+          setEvents(prev => [...prev, ev]);
+        } catch {}
+      };
+
+      ws.onclose = () => {
+        setTimeout(connectEvents, 2000);
+      };
+    }
+    connectEvents();
+    return () => eventWsRef.current?.close();
+  }, [selectedId]);
+
+  const nodeStates = useMemo(() => deriveNodeStates(events), [events]);
 
   return (
     <div id="layout">
-      <Sidebar sessions={sessions} selectedId={selId} onSelect={setSelId} />
+      <Sidebar
+        sessions={sessions}
+        selectedId={selectedId}
+        onSelect={(id) => { setSelectedId(id); setEvents([]); }}
+      />
       <div id="main">
-        {selId ? <>
-          <div id="state-panel">
-            <StateMachine activeStep={activeStep} activeAgent={activeAgent} />
-          </div>
-          <SequenceDiagram events={events} activeAgent={activeAgent} activeStep={activeStep} />
-        </> : <div className="placeholder">select a session</div>}
+        <div id="state-panel">
+          {selectedId
+            ? <StateMachine nodeStates={nodeStates} />
+            : <div className="placeholder">select a session</div>
+          }
+        </div>
+        <div id="sequence-panel">
+          {selectedId
+            ? <SequenceDiagram events={events} />
+            : <div className="placeholder">select a session</div>
+          }
+        </div>
       </div>
     </div>
   );
 }
 
-ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
