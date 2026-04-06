@@ -444,3 +444,66 @@ progress   [12:06:33]  agent_progress  parentToolUseID=toolu_01Ck  agentId=a69d.
 ...
 user       [12:07:15]  tool_result   tool_use_id=toolu_01Ck  ← agent done, duration = 46s
 ```
+
+---
+
+## SubagentStart / SubagentStop Hook Payloads
+
+Claude Code fires two hooks around every subagent invocation. Both are separate from the native storage — they write to `~/.claude/logs/subagent-events.jsonl` (or wherever the hook script writes them) and provide an **authoritative, real-time signal** for live/done status that does not depend on the tool_result join.
+
+### SubagentStart
+
+Fires the moment the subagent begins. The payload does **not** yet include the transcript path (the file may not exist).
+
+```json
+{
+  "session_id": "78b85df3-9ce0-4d1d-a4ce-2d7459980b92",
+  "transcript_path": "/Users/pereid22/.claude/projects/-Users-pereid22-rose/78b85df3-9ce0-4d1d-a4ce-2d7459980b92.jsonl",
+  "cwd": "/Users/pereid22/rose",
+  "agent_id": "a73f163bf6391f728",
+  "agent_type": "rose-backlog",
+  "hook_event_name": "SubagentStart"
+}
+```
+
+Note: `transcript_path` here is the **parent** session transcript, not the subagent's own `.jsonl`.
+
+### SubagentStop
+
+Fires when the subagent finishes. Adds the subagent transcript path and the last assistant message.
+
+```json
+{
+  "session_id": "78b85df3-9ce0-4d1d-a4ce-2d7459980b92",
+  "agent_id": "a73f163bf6391f728",
+  "agent_type": "rose-backlog",
+  "hook_event_name": "SubagentStop",
+  "stop_hook_active": false,
+  "agent_transcript_path": "/Users/pereid22/.claude/projects/-Users-pereid22-rose/78b85df3-9ce0-4d1d-a4ce-2d7459980b92/subagents/agent-a73f163bf6391f728.jsonl",
+  "last_assistant_message": "Task complete. Read one file, reported back to team-lead."
+}
+```
+
+Key fields:
+
+| Field | Present in | Notes |
+|---|---|---|
+| `session_id` | Both | Parent session UUID |
+| `agent_id` | Both | Join key to `subagents/agent-{agentId}.*` files |
+| `agent_type` | Both | Named agent type (e.g. `rose-backlog`) |
+| `hook_event_name` | Both | `"SubagentStart"` or `"SubagentStop"` |
+| `transcript_path` | Start only | Parent transcript path |
+| `agent_transcript_path` | Stop only | Subagent's own `.jsonl` |
+| `last_assistant_message` | Stop only | Final message text from the subagent |
+| `stop_hook_active` | Stop only | Whether a `Stop` hook is also active |
+
+### Using hooks for live/done detection
+
+The `agent_id` in both payloads matches exactly the filename stem of `subagents/agent-{agentId}.jsonl`. This gives a clean signal:
+
+- Last event for an `agent_id` is `SubagentStart` → agent is **live**
+- Last event for an `agent_id` is `SubagentStop` → agent is **done**
+
+This is more reliable than the tool_result join (which has a timing gap at startup) and the mtime heuristic (which was a 30-second guess).
+
+The log file `~/.claude/logs/subagent-events.jsonl` is written by the `log-subagent-events.sh` hook, which is registered under both `SubagentStart` and `SubagentStop` in `~/.claude/settings.json`.

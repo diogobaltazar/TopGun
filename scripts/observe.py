@@ -13,11 +13,13 @@ import re
 import subprocess
 import sys
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-PROJECTS_DIR = Path.home() / ".claude" / "projects"
-SESSIONS_DIR = Path.home() / ".claude" / "sessions"
+PROJECTS_DIR    = Path.home() / ".claude" / "projects"
+SESSIONS_DIR    = Path.home() / ".claude" / "sessions"
+SUBAGENT_LOG    = Path.home() / ".claude" / "logs" / "subagent-events.jsonl"
 
 DEBOUNCE_S = 0.15  # seconds after last event before redrawing
 
@@ -119,6 +121,41 @@ def live_transcripts() -> dict[str, dict]:
     return result
 
 
+# ── Subagent hook log ────────────────────────────────────────────────────────
+
+def read_subagent_hook_states() -> dict[str, str]:
+    """Return {agent_id: "live"|"done"} from SubagentStart/SubagentStop hook log.
+
+    The last event for each agent_id is authoritative:
+      SubagentStart → "live",  SubagentStop → "done"
+    """
+    states: dict[str, str] = {}
+    if not SUBAGENT_LOG.exists():
+        return states
+    try:
+        with SUBAGENT_LOG.open() as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                hook     = entry.get("hook", "")
+                payload  = entry.get("payload", {})
+                agent_id = payload.get("agent_id")
+                if not agent_id:
+                    continue
+                if hook == "SubagentStart":
+                    states[agent_id] = "live"
+                elif hook == "SubagentStop":
+                    states[agent_id] = "done"
+    except OSError:
+        pass
+    return states
+
+
 # ── Transcript reading ────────────────────────────────────────────────────────
 
 def strip_tags(text: str) -> str:
@@ -199,7 +236,7 @@ def read_transcript(path: Path) -> dict:
     }
 
 
-def read_subagents(session_dir: Path, agent_tool_use: dict, completed_tool_uses: set, session_live: bool) -> list[dict]:
+def read_subagents(session_dir: Path, agent_tool_use: dict, completed_tool_uses: set, session_live: bool, hook_states: dict[str, str] | None = None) -> list[dict]:
     """Read subagent metadata and transcripts from {session_dir}/subagents/."""
     subagents_dir = session_dir / "subagents"
     if not subagents_dir.exists():
@@ -225,8 +262,11 @@ def read_subagents(session_dir: Path, agent_tool_use: dict, completed_tool_uses:
         tool_use_count = 0
         size_kb     = None
 
+        jsonl_mtime = None
         if jsonl_file.exists():
-            size_kb = round(jsonl_file.stat().st_size / 1024, 1)
+            st      = jsonl_file.stat()
+            size_kb = round(st.st_size / 1024, 1)
+            jsonl_mtime = st.st_mtime
             try:
                 with jsonl_file.open() as f:
                     for line in f:
@@ -249,14 +289,18 @@ def read_subagents(session_dir: Path, agent_tool_use: dict, completed_tool_uses:
             except OSError:
                 pass
 
-        tool_use_id = agent_tool_use.get(agent_id, "")
-        if tool_use_id:
-            # Link established via progress entries — tool_result is authoritative
-            is_done = tool_use_id in completed_tool_uses
+        # Determine live/done — in order of reliability:
+        #  1. Hook log (SubagentStart/SubagentStop) — authoritative real-time signal
+        #  2. Tool-result join via agent_progress entries — slight timing gap at startup
+        #  3. Assume done (conservative fallback for old sessions without hooks)
+        if hook_states and agent_id in hook_states:
+            is_done = hook_states[agent_id] == "done"
         else:
-            # No progress entries yet (agent just started, timing gap) —
-            # assume live if the session is live, done otherwise
-            is_done = not session_live
+            tool_use_id = agent_tool_use.get(agent_id, "")
+            if tool_use_id:
+                is_done = tool_use_id in completed_tool_uses
+            else:
+                is_done = True  # no signal available — conservative default
         status = "live" if (not is_done) and session_live else "done"
 
         agents.append({
@@ -277,6 +321,7 @@ def read_subagents(session_dir: Path, agent_tool_use: dict, completed_tool_uses:
 
 def scan_sessions() -> list[dict]:
     live         = live_transcripts()
+    hook_states  = read_subagent_hook_states()
     sessions     = []
     matched_pids = set()
 
@@ -305,6 +350,7 @@ def scan_sessions() -> list[dict]:
                     info["agent_tool_use"],
                     info["completed_tool_uses"],
                     status == "live",
+                    hook_states,
                 )
                 sessions.append({
                     "session_id":  session_id,
@@ -567,7 +613,8 @@ def watch_sessions():
     observer = Observer()
     handler  = Handler()
 
-    for watch_dir in (SESSIONS_DIR, PROJECTS_DIR):
+    logs_dir = SUBAGENT_LOG.parent
+    for watch_dir in (SESSIONS_DIR, PROJECTS_DIR, logs_dir):
         watch_dir.mkdir(parents=True, exist_ok=True)
         observer.schedule(handler, str(watch_dir), recursive=True)
 
