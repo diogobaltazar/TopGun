@@ -19,12 +19,20 @@ SESSIONS_DIR = Path.home() / ".claude" / "sessions"
 
 # ── ANSI ──────────────────────────────────────────────────────────────────────
 
-GREEN  = "\033[32m"
-YELLOW = "\033[33m"
-DIM    = "\033[2m"
-BLINK  = "\033[5m"
 RESET  = "\033[0m"
 BOLD   = "\033[1m"
+DIM    = "\033[2m"
+BLINK  = "\033[5m"
+
+# Solarized + Nord palette
+SOL_GREEN    = "\033[38;5;107m"  # live dot     — Nord green   #A3BE8C
+FROST_BLUE   = "\033[38;5;110m"  # session ID   — Nord frost   #88C0D0
+SOL_YELLOW   = "\033[38;5;136m"  # resumed ←    — Solarized yellow #B58900
+SOL_ORANGE   = "\033[38;5;166m"  # worktree     — Solarized orange #CB4B16
+SNOW         = "\033[38;5;255m"  # title        — Nord snow    #ECEFF4
+FROST_TEAL   = "\033[38;5;109m"  # branch       — Nord frost   #8FBCBB
+
+YELLOW = SOL_YELLOW   # fallback for fmt_dot unknown
 
 
 # ── Git helpers ───────────────────────────────────────────────────────────────
@@ -265,7 +273,7 @@ def fmt_project(path: str | None) -> str:
     p = Path(path)
     parent = str(p.parent) + "/"
     name   = p.name
-    return f"{DIM}{parent}{RESET}{name}"
+    return f"{DIM}{parent}{RESET}{BOLD}{name}{RESET}"
 
 
 def fmt_worktree(path: str | None) -> str:
@@ -279,9 +287,9 @@ SEP = f"  {DIM}{'─' * 72}{RESET}"
 
 def fmt_dot(status: str) -> str:
     if status == "live":
-        return f"{BLINK}{GREEN}●{RESET}"
+        return f"{BLINK}{SOL_GREEN}●{RESET}"
     elif status == "unknown":
-        return f"{YELLOW}●{RESET}"
+        return f"{SOL_YELLOW}●{RESET}"
     else:
         return f"{DIM}○{RESET}"
 
@@ -296,16 +304,21 @@ def list_sessions():
     print()
     for s in sessions:
         status   = s["status"]
-        sid      = f"{BOLD}{s['session_id']}{RESET}"
+        sid      = f"{BOLD}{FROST_BLUE}{s['session_id']}{RESET}"
         psid     = s.get("process_sid", "")
-        resumed  = f"{DIM}←{psid}{RESET}" if psid and psid != s["session_id"] else ""
+        resumed  = f"{SOL_YELLOW}←{DIM}{psid}{RESET}" if psid and psid != s["session_id"] else ""
         pid      = f"{DIM}pid {s['pid']}{RESET}" if s["pid"] else ""
         started  = fmt_dt(s["started_at"])
         project  = fmt_project(s["project"])
-        worktree = s["worktree"] and f"worktree {fmt_worktree(s['worktree'])}"
-        branch   = f"⎇ {s['branch']}" if s["branch"] else None
-        title    = s["title"] or ""
-        size     = f"{s['size_kb']} KB" if s["size_kb"] is not None else "0 KB"
+        worktree = s["worktree"] and f"{SOL_ORANGE}worktree {fmt_worktree(s['worktree'])}{RESET}"
+        branch   = f"{FROST_TEAL}⎇ {s['branch']}{RESET}" if s["branch"] else None
+        title    = f"{SNOW}{s['title']}{RESET}" if s["title"] else ""
+        if s["size_kb"] is None:
+            size = "0 KB"
+        elif s["size_kb"] >= 1024:
+            size = f"{s['size_kb'] / 1024:.1f} MB"
+        else:
+            size = f"{s['size_kb']} KB"
 
         meta_parts = [p for p in [project, branch, worktree, f"{DIM}{started}{RESET}", f"{DIM}{size}{RESET}"] if p]
         meta = f"  {DIM}·{RESET}  ".join(str(p) for p in meta_parts)
