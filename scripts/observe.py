@@ -695,7 +695,7 @@ def render_sessions() -> "Text":
                     acount = f"×{r['count']}".rjust(col_count)
                     asize  = fmt_size(r["total_kb"]).rjust(col_size)
                     acalls = str(r["total_calls"]).rjust(col_calls)
-                    pfx    = r["agent_type"] + ":"   # stable key across invocations
+                    pfx    = session_id + ":" + r["agent_type"] + ":"  # scoped per session
 
                     out.append(*dot_sep)
                     out.append(aid, style=STYLE_DIM)
