@@ -98,7 +98,8 @@ def list_sessions():
         status = meta.get("status", "?")
         ts     = fmt_ts(meta.get("started_at", ""))
         is_active = d.name == active_id
-        line = f"  {d.name}  {status:<12}  {ts}  {title[:40]}"
+        display_status = "active" if is_active else status
+        line = f"  {d.name}  {display_status:<12}  {ts}  {title[:40]}"
         if is_active:
             print(f"{GREEN}{line}{RESET}")
         else:
@@ -362,14 +363,15 @@ def main():
     while True:
         time.sleep(POLL_INTERVAL)
 
-        # Check meta for terminal status
+        # Check meta for terminal status — but only stop if no longer the active session
         try:
             current_meta = json.loads(meta_file.read_text())
-            if current_meta.get("status") in TERMINAL_STATUSES:
-                # Drain any remaining events before exiting
-                pass
         except Exception:
             current_meta = {}
+        try:
+            still_active = (LOGS_DIR / ".active-session").read_text().strip() == session_id
+        except Exception:
+            still_active = False
 
         # Read new lines
         if events_file.exists():
@@ -398,7 +400,7 @@ def main():
                     for row in fmt_msg_row(msg):
                         print(row)
 
-        if current_meta.get("status") in TERMINAL_STATUSES:
+        if not still_active and current_meta.get("status") in TERMINAL_STATUSES:
             print()
             print(f"  ━━  {current_meta.get('status', 'done')}  " + "━" * (W - 12))
             print()
