@@ -4,6 +4,38 @@ Notes on Claude Code's behaviour, built up from docs research and most important
 
 ---
 
+## Configuration
+
+Claude Code configuration is split across two files:
+
+### `~/.claude/settings.json`
+
+Runtime settings — hooks, permissions, env vars. Managed by `rose install`.
+
+```json
+{
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  }
+}
+```
+
+`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "1"` is required to enable agent teams (teammates). Without it, the `Agent` tool only supports subagents.
+
+### `~/.claude.json`
+
+User preferences — UI, model, feature flags. Edited directly (not managed by `rose install`).
+
+```json
+{
+  "teammateMode": "in-process"
+}
+```
+
+`teammateMode: "in-process"` controls how teammates are spawned. Must be set here, not in `settings.json`.
+
+---
+
 ## Session
 
 A **session** is the continuous conversation context identified by a single `session_id` UUID. It begins when you launch (or resume) Claude Code and ends when you exit.
