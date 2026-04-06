@@ -19,6 +19,7 @@ from pathlib import Path
 
 PROJECTS_DIR    = Path.home() / ".claude" / "projects"
 SESSIONS_DIR    = Path.home() / ".claude" / "sessions"
+TEAMS_DIR       = Path.home() / ".claude" / "teams"
 SUBAGENT_LOG    = Path.home() / ".claude" / "logs" / "subagent-events.jsonl"
 MESSAGE_LOG     = Path.home() / ".claude" / "logs" / "message-events.jsonl"
 
@@ -120,6 +121,29 @@ def live_transcripts() -> dict[str, dict]:
                 break
 
     return result
+
+
+# ── Team config ───────────────────────────────────────────────────────────────
+
+def read_team_lead(session_id: str) -> str | None:
+    """Return the lead agent_type if session_id is currently leading a team."""
+    if not TEAMS_DIR.exists():
+        return None
+    for team_dir in TEAMS_DIR.iterdir():
+        config = team_dir / "config.json"
+        if not config.exists():
+            continue
+        try:
+            data = json.loads(config.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        if data.get("leadSessionId") != session_id:
+            continue
+        lead_id = data.get("leadAgentId")
+        for member in data.get("members", []):
+            if member.get("agentId") == lead_id:
+                return member.get("agentType")
+    return None
 
 
 # ── Subagent hook log ────────────────────────────────────────────────────────
@@ -411,6 +435,7 @@ def scan_sessions() -> list[dict]:
                     hook_states,
                     shutdown_requests,
                 )
+                team_lead = read_team_lead(session_id) if status == "live" else None
                 sessions.append({
                     "session_id":  session_id,
                     "process_sid": process_sid,
@@ -423,6 +448,7 @@ def scan_sessions() -> list[dict]:
                     "title":       info["title"],
                     "size_kb":     info["size_kb"],
                     "agents":      agents,
+                    "team_lead":   team_lead,
                 })
 
     # Live processes with no transcript yet
@@ -561,8 +587,9 @@ def render_sessions() -> "Text":
         out.append("\n")
 
         # agents — group by agent_type, one row per type
-        agents = s.get("agents", [])
-        if agents:
+        agents    = s.get("agents", [])
+        team_lead = s.get("team_lead")
+        if agents or team_lead:
             # group: {agent_type: [invocations...]}  (sorted by started_at already)
             groups: dict[str, list] = {}
             for a in agents:
@@ -572,7 +599,7 @@ def render_sessions() -> "Text":
             rows = []
             for agent_type, invocations in groups.items():
                 last        = invocations[-1]
-                status      = "live" if any(a["status"] == "live" for a in invocations) else "done"
+                row_status  = "live" if any(a["status"] == "live" for a in invocations) else "done"
                 count       = len(invocations)
                 total_kb    = round(sum((a["size_kb"] or 0) for a in invocations), 1)
                 total_calls = sum(a["tool_use_count"] for a in invocations)
@@ -580,46 +607,66 @@ def render_sessions() -> "Text":
                     "agent_type":  agent_type,
                     "agent_id":    last["agent_id"],
                     "description": last["description"],
-                    "status":      status,
+                    "status":      row_status,
                     "count":       count,
                     "total_kb":    total_kb,
                     "total_calls": total_calls,
+                    "is_lead":     False,
                 })
 
-            col_type  = max(len(r["agent_type"])         for r in rows)
-            col_count = max(len(f"×{r['count']}")        for r in rows)
-            col_size  = max(len(fmt_size(r["total_kb"])) for r in rows)
-            col_calls = max(len(str(r["total_calls"]))   for r in rows)
+            if team_lead:
+                rows.insert(0, {
+                    "agent_type":  team_lead,
+                    "agent_id":    "",
+                    "description": "team-lead",
+                    "status":      status,
+                    "count":       None,
+                    "total_kb":    None,
+                    "total_calls": None,
+                    "is_lead":     True,
+                })
+
+            col_type  = max(len(r["agent_type"])                              for r in rows)
+            col_count = max(len(f"×{r['count']}") if r["count"] else 0        for r in rows)
+            col_size  = max(len(fmt_size(r["total_kb"])) if r["total_kb"] else 0 for r in rows)
+            col_calls = max(len(str(r["total_calls"])) if r["total_calls"] is not None else 0 for r in rows)
             dot_sep   = ("  ·  ", STYLE_DIM)
 
             for r in rows:
                 atype  = r["agent_type"].ljust(col_type)
-                aid    = r["agent_id"][:8]
-                acount = f"×{r['count']}".rjust(col_count)
-                asize  = fmt_size(r["total_kb"]).rjust(col_size)
-                acalls = str(r["total_calls"]).rjust(col_calls)
                 adesc  = r["description"] or ""
 
-                # line 1 — dot  name  ·  id  ·  ×N  ·  KB  ·  ⚙ calls
                 out.append("     ")
                 if r["status"] == "live":
                     out.append("●", style=STYLE_NEON + " blink")
                 else:
                     out.append("○", style=STYLE_DIM)
                 out.append("  ")
-                out.append(atype,  style=STYLE_NEON_DIM)
-                out.append(*dot_sep)
-                out.append(aid,    style=STYLE_DIM)
-                out.append(*dot_sep)
-                out.append(acount, style=STYLE_DIM)
-                out.append(*dot_sep)
-                out.append(asize,  style=STYLE_DIM)
-                out.append(*dot_sep)
-                out.append(f"⚙ {acalls}", style=STYLE_DIM)
+                out.append(atype, style=STYLE_NEON_DIM)
+
+                if r["is_lead"]:
+                    # lead row — name · team-lead only
+                    out.append(*dot_sep)
+                    out.append("team-lead", style=STYLE_DIM)
+                else:
+                    # subagent row — name · id · ×N · KB · ⚙ calls
+                    aid    = r["agent_id"][:8]
+                    acount = f"×{r['count']}".rjust(col_count)
+                    asize  = fmt_size(r["total_kb"]).rjust(col_size)
+                    acalls = str(r["total_calls"]).rjust(col_calls)
+                    out.append(*dot_sep)
+                    out.append(aid,    style=STYLE_DIM)
+                    out.append(*dot_sep)
+                    out.append(acount, style=STYLE_DIM)
+                    out.append(*dot_sep)
+                    out.append(asize,  style=STYLE_DIM)
+                    out.append(*dot_sep)
+                    out.append(f"⚙ {acalls}", style=STYLE_DIM)
+
                 out.append("\n")
 
-                # line 2 — description
-                if adesc:
+                # line 2 — description (subagents only)
+                if adesc and not r["is_lead"]:
                     out.append("          ")
                     out.append(adesc, style=STYLE_DIM)
                     out.append("\n")
@@ -673,7 +720,7 @@ def watch_sessions():
     handler  = Handler()
 
     logs_dir = SUBAGENT_LOG.parent  # same dir as MESSAGE_LOG
-    for watch_dir in (SESSIONS_DIR, PROJECTS_DIR, logs_dir):
+    for watch_dir in (SESSIONS_DIR, PROJECTS_DIR, TEAMS_DIR, logs_dir):
         watch_dir.mkdir(parents=True, exist_ok=True)
         observer.schedule(handler, str(watch_dir), recursive=True)
 
