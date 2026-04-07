@@ -373,8 +373,7 @@ def read_transcript(path: Path) -> dict:
                     if msg.get("role") == "user":
                         if cwd is None:
                             cwd = entry.get("cwd")
-                        if branch is None:
-                            branch = entry.get("gitBranch")
+                        branch = entry.get("gitBranch") or branch
                         if title is None:
                             content = msg.get("content", "")
                             if isinstance(content, str):
