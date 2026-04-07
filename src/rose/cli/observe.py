@@ -821,7 +821,7 @@ def _render_session_body(s: dict) -> "Text":
         return f"[{style}]{txt}[/]"
 
     for r in agent_rows:
-        dot_s = STYLE_NEON if r["status"] == "live" else STYLE_DIM
+        dot_s = (STYLE_NEON + " blink") if r["status"] == "live" else STYLE_DIM
         dot_c = "●" if r["status"] == "live" else "○"
         aid   = r["agent_id"]
         label = f"  [{dot_s}]{dot_c}[/] [{STYLE_DIM}]{aid}[/] [{STYLE_NEON_DIM}]{r['agent_type']}[/]"
@@ -842,7 +842,7 @@ def _render_session_body(s: dict) -> "Text":
     title_lower = (s.get("title") or "").lstrip().lower()
     main_name   = "rose" if title_lower.startswith("/rose") else "claude"
     main_sid    = session_id.replace("-", "")[:agent_id_len]
-    dot_s       = STYLE_NEON if status == "live" else STYLE_DIM
+    dot_s       = (STYLE_NEON + " blink") if status == "live" else STYLE_DIM
     dot_c       = "●" if status == "live" else "○"
     main_label  = f"  [{dot_s}]{dot_c}[/] [{STYLE_DIM}]{main_sid}[/] [{STYLE_NEON_DIM}]{main_name}[/]"
     k           = session_id + ":main:"
