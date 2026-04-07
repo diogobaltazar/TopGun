@@ -809,7 +809,7 @@ def _render_session_body(s: dict) -> "Text":
         k = session_id + ":" + r["agent_type"] + ":"
 
         def _cell(txt, key, val, style):
-            if _check_delta(key, val):
+            if val is not None and _check_delta(key, val):
                 return f"[{STYLE_DELTA}]{txt} ↑[/]"
             return f"[{style}]{txt}[/]"
 
@@ -825,9 +825,10 @@ def _render_session_body(s: dict) -> "Text":
 
     from io import StringIO
     from rich.console import Console as _C
+    from rich.text import Text as _T
     buf = StringIO()
-    _C(file=buf, highlight=False, width=120).print(table)
-    out.append(buf.getvalue())
+    _C(file=buf, highlight=False, width=120, force_terminal=True, color_system="truecolor").print(table)
+    out.append_text(_T.from_ansi(buf.getvalue()))
 
     out.append("\n")
     return out
