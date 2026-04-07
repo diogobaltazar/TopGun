@@ -771,8 +771,21 @@ def _render_session_body(s: dict) -> "Text":
 
     # ── Agent table ─────────────────────────────────────────────────────────
     from rich.table import Table
+    from rich.box import Box
 
-    table = Table(box=None, show_header=True, padding=(0, 1), pad_edge=False)
+    # No outer borders, no column separators, but mid-row rules enabled
+    _RULE_BOX = Box(
+        "    \n"
+        "    \n"
+        " ─  \n"  # mid-rule: space + dash + space (no column junction)
+        "    \n"
+        " ─  \n"
+        " ─  \n"
+        "    \n"
+        "    \n",
+    )
+
+    table = Table(box=_RULE_BOX, show_header=True, padding=(0, 1), pad_edge=False, show_edge=False)
     table.add_column("", no_wrap=True)       # dot + id + type
     table.add_column("memory", justify="right", no_wrap=True, header_style=STYLE_KEY)
     table.add_column("tools", justify="right", no_wrap=True, header_style=STYLE_KEY)
@@ -792,11 +805,12 @@ def _render_session_body(s: dict) -> "Text":
     table.add_row(
         "",
         f"[bold {STYLE_MEM}]{fmt_size(sum_kb)}[/]",
-        f"[bold {STYLE_TOOL}]⚙ {sum_tools}[/]",
+        f"[bold {STYLE_TOOL}]{sum_tools}[/]",
         f"[bold {STYLE_TIME}]{fmt_duration(sum_dur)}[/]",
         f"[bold {STYLE_TOK}]{fmt_tokens(sum_tokens)}[/]",
         f"[bold {STYLE_USD}]{fmt_usd(sum_usd)}[/]",
         f"[bold {STYLE_DIM}]×{sum_inv}[/]",
+        end_section=True,
     )
 
     # Agent rows
@@ -816,7 +830,7 @@ def _render_session_body(s: dict) -> "Text":
         table.add_row(
             label,
             _cell(fmt_size(r["total_kb"]),       k+"kb",    r["total_kb"],     STYLE_MEM),
-            _cell(f"⚙ {r['total_tools']}",       k+"tools", r["total_tools"],  STYLE_TOOL),
+            _cell(str(r["total_tools"]),             k+"tools", r["total_tools"],  STYLE_TOOL),
             _cell(fmt_duration(r["duration"]),     k+"dur",   r["duration"],     STYLE_TIME),
             _cell(fmt_tokens(r["total_tokens"]),   k+"tok",   r["total_tokens"], STYLE_TOK),
             _cell(fmt_usd(r["total_usd"]),         k+"usd",   r["total_usd"],   STYLE_USD),
