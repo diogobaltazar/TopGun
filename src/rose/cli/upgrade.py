@@ -59,6 +59,33 @@ def _merge_hooks(dest: dict, src: dict) -> list[str]:
     return changes
 
 
+def _merge_permissions(dest: dict, src: dict) -> list[str]:
+    """
+    Merge permission entries from src settings into dest settings in-place.
+
+    Adds any allow-list entries from src that are absent in dest.
+    Never removes entries the user has added — the merge is strictly additive.
+
+    Returns a list of human-readable change descriptions.
+    """
+    changes = []
+    src_allow = src.get("permissions", {}).get("allow", [])
+    if not src_allow:
+        return changes
+
+    dest_permissions = dest.setdefault("permissions", {})
+    dest_allow = dest_permissions.setdefault("allow", [])
+    existing = set(dest_allow)
+
+    for entry in src_allow:
+        if entry not in existing:
+            dest_allow.append(entry)
+            existing.add(entry)
+            changes.append(f"added permission '{entry}'")
+
+    return changes
+
+
 def upgrade(
     claude_dir: Path = typer.Argument(
         Path("/claude"),
@@ -128,20 +155,34 @@ def upgrade(
                 console.print()
                 raise typer.Exit(1)
 
-            changes = _merge_hooks(dst_settings, src_settings)
+            hook_changes = _merge_hooks(dst_settings, src_settings)
+            perm_changes = _merge_permissions(dst_settings, src_settings)
             dst_settings_path.write_text(json.dumps(dst_settings, indent=2) + "\n")
 
-            if changes:
-                for change in changes:
+            if hook_changes:
+                for change in hook_changes:
                     results.add_row("[green]✓[/green]", "settings.json", change)
             else:
                 results.add_row("~", "settings.json", "hooks already up to date")
+
+            if perm_changes:
+                for change in perm_changes:
+                    results.add_row("[green]✓[/green]", "settings.json", change)
+            else:
+                results.add_row("~", "settings.json", "permissions already up to date")
         else:
-            # No existing settings.json — write only the hooks section
+            # No existing settings.json — write hooks and permissions sections
             dst_settings_path.write_text(
-                json.dumps({"hooks": src_settings.get("hooks", {})}, indent=2) + "\n"
+                json.dumps(
+                    {
+                        "hooks": src_settings.get("hooks", {}),
+                        "permissions": src_settings.get("permissions", {}),
+                    },
+                    indent=2,
+                )
+                + "\n"
             )
-            results.add_row("[green]✓[/green]", "settings.json", "created with hooks")
+            results.add_row("[green]✓[/green]", "settings.json", "created with hooks and permissions")
 
     console.print(results)
     console.print()
