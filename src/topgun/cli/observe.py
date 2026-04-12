@@ -951,6 +951,14 @@ def watch_cmd(
         from rich.console import Console as _Console
         _Console().print("[yellow]TODO:[/yellow] launch topgun-web container")
         return
+
+    if not sys.stdin.isatty():
+        from rich.console import Console as _Console
+        sessions = scan_sessions()
+        output   = render_tabbed_view(sessions, 0)
+        _Console().print(output, highlight=False)
+        return
+
     from watchdog.observers import Observer
     from watchdog.events import FileSystemEventHandler
     from rich.console import Console
