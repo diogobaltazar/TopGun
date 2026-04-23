@@ -5,9 +5,21 @@ import typer
 
 CONFIG_FILE = Path("/topgun-config/config.json")
 
-app = typer.Typer(name="config", help="Manage topgun configuration.", add_completion=False)
-observe_app = typer.Typer(name="observe", help="Projects to monitor with topgun observe.", add_completion=False)
+app = typer.Typer(name="config", help="Manage topgun configuration.", add_completion=False, invoke_without_command=True)
+observe_app = typer.Typer(name="observe", help="Projects to monitor with topgun observe.", add_completion=False, invoke_without_command=True)
 app.add_typer(observe_app)
+
+
+@app.callback()
+def _config_help(ctx: typer.Context):
+    if ctx.invoked_subcommand is None:
+        typer.echo(ctx.get_help())
+
+
+@observe_app.callback()
+def _observe_config_help(ctx: typer.Context):
+    if ctx.invoked_subcommand is None:
+        typer.echo(ctx.get_help())
 
 
 def _read() -> dict:

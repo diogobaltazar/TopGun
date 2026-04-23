@@ -7,11 +7,17 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-app = typer.Typer(name="session", help="Manage Claude Code session transcripts.", add_completion=False)
+app = typer.Typer(name="session", help="Manage Claude Code session transcripts.", add_completion=False, invoke_without_command=True)
+
+
+@app.callback()
+def _session_help(ctx: typer.Context):
+    if ctx.invoked_subcommand is None:
+        typer.echo(ctx.get_help())
 console = Console()
 
 CLAUDE_PROJECTS = Path(os.environ.get("PROJECTS_DIR", Path.home() / ".claude" / "projects"))
-VAULT           = Path(os.environ.get("TOPGUN_VAULT", Path.home() / ".topgun-vault"))
+VAULT           = Path(os.environ.get("TOPGUN_VAULT", Path.home() / ".topgun" / "archive"))
 
 
 def _find_transcript(session_id: str) -> tuple[Path, Path]:

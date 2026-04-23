@@ -19,10 +19,13 @@ services:
         source: ${HOME}/.config/topgun
         target: /topgun-config
       - type: bind
-        source: ${HOME}/.topgun-vault
-        target: /topgun-vault
+        source: ${HOME}/.topgun
+        target: /topgun-data
     environment:
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - TOPGUN_CONFIG=/topgun-config/config.json
+      - TOPGUN_VAULT=/topgun-data/archive
+      - OBSIDIAN_DIR=/topgun-data
 
   api:
     container_name: topgun-api

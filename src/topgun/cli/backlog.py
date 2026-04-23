@@ -1,0 +1,362 @@
+import json
+import os
+import re
+import socket
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import typer
+from rich.console import Console
+from rich.live import Live
+from rich.panel import Panel
+from rich.table import Table
+from rich import box
+
+CONFIG_FILE = Path(
+    os.environ.get("TOPGUN_CONFIG", str(Path.home() / ".config/topgun/config.json"))
+)
+
+console = Console()
+app = typer.Typer(name="backlog", help="Manage your federated backlog.", add_completion=False, invoke_without_command=True)
+
+
+@app.callback()
+def _backlog_help(ctx: typer.Context):
+    if ctx.invoked_subcommand is None:
+        typer.echo(ctx.get_help())
+
+PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2, "": 3}
+PRIORITY_COLOR = {"high": "red", "medium": "yellow", "low": "green"}
+PRIORITY_ICON = {"⏫": "high", "🔼": "medium", "🔽": "low"}
+
+_DUE_RE = re.compile(r"📅\s*(\d{4}-\d{2}-\d{2})")
+_PRI_RE = re.compile(r"(⏫|🔼|🔽)")
+_TASK_RE = re.compile(r"^\s*- \[ \]\s*")
+
+
+def _read_config() -> dict:
+    try:
+        return json.loads(CONFIG_FILE.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _write_config(data: dict) -> None:
+    CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    CONFIG_FILE.write_text(json.dumps(data, indent=2) + "\n")
+
+
+def _get_sources() -> list[dict]:
+    return _read_config().get("backlog", {}).get("sources", [])
+
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+@app.command("track")
+def track(
+    type: str = typer.Option(None, "--type", "-t", help="github or obsidian"),
+    repo: str = typer.Option(None, "--repo", help="GitHub repo (owner/repo)"),
+    path: str = typer.Option(None, "--path", help="Obsidian vault path"),
+    description: str = typer.Option(None, "--description", "-d", help="Description"),
+    token_env: str = typer.Option(None, "--token-env", help="Token env var (github only)"),
+):
+    """Add a new backlog source (GitHub repo or Obsidian vault)."""
+    data = _read_config()
+    sources = data.setdefault("backlog", {}).setdefault("sources", [])
+
+    if type is None:
+        typer.echo("source type: [1] github  [2] obsidian")
+        choice = typer.prompt("type", default="1")
+        type = "github" if choice == "1" else "obsidian" if choice == "2" else None
+        if type is None:
+            typer.echo("error: invalid choice", err=True)
+            raise typer.Exit(1)
+
+    if type == "github":
+        repo = repo or typer.prompt("GitHub repo (owner/repo)").strip()
+        token_env = token_env or typer.prompt("Token env var", default="GITHUB_TOKEN").strip()
+        if description is None:
+            description = typer.prompt("Description", default="").strip() or _fetch_github_description(repo, token_env)
+        entry = {"type": "github", "repo": repo, "description": description, "token_env": token_env}
+        duplicate = any(s.get("type") == "github" and s.get("repo") == repo for s in sources)
+    elif type == "obsidian":
+        raw = path or typer.prompt("Vault path").strip()
+        resolved = str(Path(raw).expanduser().resolve())
+        if description is None:
+            description = typer.prompt("Description", default="").strip()
+        entry = {"type": "obsidian", "path": resolved, "description": description}
+        duplicate = any(s.get("type") == "obsidian" and s.get("path") == resolved for s in sources)
+    else:
+        typer.echo("error: type must be github or obsidian", err=True)
+        raise typer.Exit(1)
+
+    if duplicate:
+        typer.echo("already tracked")
+        raise typer.Exit()
+
+    sources.append(entry)
+    _write_config(data)
+    label = entry.get("repo") or entry.get("path")
+    typer.echo(f"ok: added {entry['type']} {label}")
+    if entry["type"] == "github" and not os.environ.get(entry["token_env"]):
+        typer.echo(f"add to ~/.zshrc:  export {entry['token_env']}=$(gh auth token)")
+
+
+@app.command("untrack")
+def untrack():
+    """Remove a backlog source."""
+    sources = _get_sources()
+    if not sources:
+        typer.echo("no sources tracked — run: topgun backlog track")
+        raise typer.Exit()
+
+    for i, s in enumerate(sources, 1):
+        label = s.get("repo") or s.get("path", "?")
+        typer.echo(f"  [{i}] {s['type']}  {label}")
+
+    raw = typer.prompt("remove #")
+    try:
+        idx = int(raw.strip()) - 1
+        assert 0 <= idx < len(sources)
+    except (ValueError, AssertionError):
+        typer.echo("error: invalid selection", err=True)
+        raise typer.Exit(1)
+
+    removed = sources.pop(idx)
+    data = _read_config()
+    data.setdefault("backlog", {})["sources"] = sources
+    _write_config(data)
+    label = removed.get("repo") or removed.get("path", "?")
+    typer.echo(f"ok: removed {label}")
+
+
+@app.command("sources")
+def sources_cmd():
+    """List all tracked backlog sources."""
+    sources = _get_sources()
+    if not sources:
+        typer.echo("no sources tracked — run: topgun backlog track")
+        raise typer.Exit()
+
+    for s in sources:
+        label = s.get("repo") or s.get("path", "?")
+        desc = s.get("description", "")
+        typer.echo(f"{s['type']}  {label}  {desc}")
+
+
+WEB_PORT = 5100
+WEB_URL = f"http://localhost:{WEB_PORT}"
+
+
+def _web_running() -> bool:
+    try:
+        with socket.create_connection(("localhost", WEB_PORT), timeout=1):
+            return True
+    except OSError:
+        return False
+
+
+@app.command("watch")
+def watch(
+    refresh: int = typer.Option(30, "--refresh", "-r", help="Refresh interval in seconds"),
+    web: bool = typer.Option(False, "--web", help="Open the web UI instead of the terminal table"),
+):
+    """Live table of all open backlog items across sources."""
+    if web:
+        if _web_running():
+            typer.echo(WEB_URL)
+        else:
+            typer.echo(f"web UI is not running — start it with:")
+            typer.echo(f"  GITHUB_TOKEN=$(gh auth token) docker compose up api web")
+        raise typer.Exit()
+
+    sources = _get_sources()
+    if not sources:
+        typer.echo("no sources tracked — run: topgun backlog track")
+        raise typer.Exit()
+
+    if not sys.stdout.isatty():
+        items, errors = _fetch_all(sources)
+        console.print(_render(items, errors, refresh))
+        return
+
+    try:
+        with Live(console=console, refresh_per_second=4, screen=True) as live:
+            while True:
+                items, errors = _fetch_all(sources)
+                live.update(_render(items, errors, refresh))
+                time.sleep(refresh)
+    except KeyboardInterrupt:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Fetching
+# ---------------------------------------------------------------------------
+
+def _fetch_all(sources: list[dict]) -> tuple[list[dict], list[str]]:
+    items, errors = [], []
+    for s in sources:
+        if s["type"] == "github":
+            fetched, err = _fetch_github(s["repo"], s.get("token_env", "GITHUB_TOKEN"))
+            items.extend(fetched)
+            if err:
+                errors.append(err)
+        elif s["type"] == "obsidian":
+            items.extend(_fetch_obsidian(s["path"]))
+    return items, errors
+
+
+def _fetch_github_description(repo: str, token_env: str) -> str:
+    token = os.environ.get(token_env, "")
+    env = {**os.environ, "GITHUB_TOKEN": token} if token else os.environ
+    result = subprocess.run(
+        ["gh", "repo", "view", repo, "--json", "description", "--jq", ".description"],
+        capture_output=True, text=True, env=env,
+    )
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _fetch_github(repo: str, token_env: str) -> tuple[list[dict], str]:
+    token = os.environ.get(token_env, "")
+    if not token:
+        return [], f"{repo}: {token_env} not set — run: export {token_env}=$(gh auth token)"
+
+    env = {**os.environ, "GITHUB_TOKEN": token}
+    result = subprocess.run(
+        [
+            "gh", "issue", "list",
+            "--repo", repo,
+            "--state", "open",
+            "--json", "number,title,labels,createdAt",
+            "--limit", "200",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    if result.returncode != 0:
+        err = result.stderr.strip().splitlines()[0] if result.stderr.strip() else "gh failed"
+        if "401" in err or "auth" in err.lower():
+            return [], f"{repo}: token invalid or expired — run: gh auth refresh"
+        return [], f"{repo}: {err}"
+
+    items = []
+    for issue in json.loads(result.stdout or "[]"):
+        priority = ""
+        for label in issue.get("labels", []):
+            name = label.get("name", "").lower()
+            if "high" in name:
+                priority = "high"
+            elif "medium" in name:
+                priority = "medium"
+            elif "low" in name:
+                priority = "low"
+        created = datetime.fromisoformat(issue["createdAt"].replace("Z", "+00:00"))
+        age = (datetime.now(timezone.utc) - created).days
+        items.append({
+            "title": f"#{issue['number']} {issue['title']}",
+            "source": repo,
+            "priority": priority,
+            "due": "",
+            "age": age,
+        })
+    return items, ""
+
+
+def _resolve_vault_path(vault_path: str) -> Path:
+    """Remap host ~/.topgun paths to /topgun-data/... when running inside Docker."""
+    path = Path(vault_path).expanduser()
+    if path.exists():
+        return path
+    obsidian_dir = os.environ.get("OBSIDIAN_DIR", "")
+    if obsidian_dir:
+        relative = path.relative_to(Path.home() / ".topgun") if path.is_relative_to(Path.home() / ".topgun") else Path(path.name)
+        candidate = Path(obsidian_dir) / relative
+        if candidate.exists():
+            return candidate
+    return path
+
+
+def _fetch_obsidian(vault_path: str) -> list[dict]:
+    vault = _resolve_vault_path(vault_path)
+    if not vault.exists():
+        return []
+
+    items = []
+    for md_file in vault.rglob("*.md"):
+        try:
+            text = md_file.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        for line in text.splitlines():
+            if not _TASK_RE.match(line):
+                continue
+            title = _TASK_RE.sub("", line).strip()
+
+            due_match = _DUE_RE.search(title)
+            due = due_match.group(1) if due_match else ""
+            title = _DUE_RE.sub("", title).strip()
+
+            pri_match = _PRI_RE.search(title)
+            priority = PRIORITY_ICON.get(pri_match.group(1), "") if pri_match else ""
+            title = _PRI_RE.sub("", title).strip()
+
+            items.append({
+                "title": title,
+                "source": md_file.stem,
+                "priority": priority,
+                "due": due,
+                "age": "",
+            })
+    return items
+
+
+# ---------------------------------------------------------------------------
+# Rendering
+# ---------------------------------------------------------------------------
+
+def _sort_key(item: dict):
+    return (
+        PRIORITY_ORDER.get(item["priority"], 3),
+        item["due"] or "9999-99-99",
+        item["source"],
+        item["title"],
+    )
+
+
+def _render(items: list[dict], errors: list[str], refresh: int) -> Panel:
+    from rich.console import Group
+    from rich.text import Text
+
+    table = Table(box=box.SIMPLE, show_header=True, header_style="bold", pad_edge=False)
+    table.add_column("Title")
+    table.add_column("Source", style="cyan", no_wrap=True)
+    table.add_column("Priority", width=8)
+    table.add_column("Due", width=12)
+    table.add_column("Age", width=4, justify="right")
+
+    for item in sorted(items, key=_sort_key):
+        pri = item["priority"]
+        color = PRIORITY_COLOR.get(pri, "dim")
+        table.add_row(
+            item["title"],
+            item["source"],
+            f"[{color}]{pri}[/{color}]" if pri else "",
+            item["due"],
+            f"{item['age']}d" if item["age"] != "" else "",
+        )
+
+    content: Any = table
+    if errors:
+        error_lines = Text("\n".join(f"  ⚠ {e}" for e in errors), style="yellow")
+        content = Group(table, error_lines)
+
+    subtitle = f"[dim]{len(items)} items · refreshes every {refresh}s · ctrl+c to exit[/dim]"
+    return Panel(content, title="[bold magenta]backlog[/bold magenta]", subtitle=subtitle)
