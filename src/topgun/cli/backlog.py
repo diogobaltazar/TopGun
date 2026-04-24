@@ -316,7 +316,12 @@ def _resolve_vault_path(vault_path: str) -> Path:
         return path
     obsidian_dir = os.environ.get("OBSIDIAN_DIR", "")
     if obsidian_dir:
-        relative = path.relative_to(Path.home() / ".topgun") if path.is_relative_to(Path.home() / ".topgun") else Path(path.name)
+        parts = path.parts
+        if ".topgun" in parts:
+            idx = parts.index(".topgun")
+            relative = Path(*parts[idx + 1:]) if idx + 1 < len(parts) else Path(".")
+        else:
+            relative = Path(path.name)
         candidate = Path(obsidian_dir) / relative
         if candidate.exists():
             return candidate
