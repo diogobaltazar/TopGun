@@ -30,6 +30,7 @@ PRIORITY_ICON = {"⏫": "high", "🔼": "medium", "🔽": "low"}
 _DUE_RE = re.compile(r"📅\s*(\d{4}-\d{2}-\d{2})")
 _PRI_RE = re.compile(r"(⏫|🔼|🔽)")
 _TASK_RE = re.compile(r"^\s*- \[ \]\s*")
+_TAG_RE = re.compile(r"(?<!\w)#([\w/-]+)")
 _SECTION_RE = re.compile(r"^##\s+(.+)$", re.MULTILINE)
 
 
@@ -192,6 +193,7 @@ def list_cmd(
     table = Table(box=box.SIMPLE, show_header=True, header_style="bold", pad_edge=False)
     table.add_column("Type", no_wrap=True)
     table.add_column("Title")
+    table.add_column("Tags", style="dim")
     table.add_column("Priority", width=8)
     table.add_column("Due", width=12)
     table.add_column("Status", width=8)
@@ -202,9 +204,11 @@ def list_cmd(
         pri = item["priority"]
         color = PRIORITY_COLOR.get(pri, "dim")
         status = item.get("state", "open")
+        tags = "  ".join(f"#{t}" for t in item.get("tags", []))
         row = [
             _type_tag(item["type"]),
             item["title"],
+            tags,
             f"[{color}]{pri}[/{color}]" if pri else "",
             item["due"],
             status,
@@ -273,14 +277,18 @@ def _fetch_github(repo: str, token_env: str) -> tuple[list[dict], str]:
     items = []
     for issue in json.loads(result.stdout or "[]"):
         priority = ""
+        tags = []
         for label in issue.get("labels", []):
-            name = label.get("name", "").lower()
-            if "high" in name:
+            name = label.get("name", "")
+            lower = name.lower()
+            if "high" in lower:
                 priority = "high"
-            elif "medium" in name:
+            elif "medium" in lower:
                 priority = "medium"
-            elif "low" in name:
+            elif "low" in lower:
                 priority = "low"
+            elif not lower.startswith("priority"):
+                tags.append(name)
         body = issue.get("body") or ""
         must_before = _parse_body_section(body, "Must Before") or None
         best_before = _parse_body_section(body, "Best Before") or None
@@ -293,6 +301,7 @@ def _fetch_github(repo: str, token_env: str) -> tuple[list[dict], str]:
             "state": "open",
             "must_before": must_before,
             "best_before": best_before,
+            "tags": tags,
         })
     return items, ""
 
@@ -340,6 +349,9 @@ def _fetch_obsidian(vault_path: str) -> list[dict]:
             priority = PRIORITY_ICON.get(pri_match.group(1), "") if pri_match else ""
             title = _PRI_RE.sub("", title).strip()
 
+            tags = _TAG_RE.findall(title)
+            title = _TAG_RE.sub("", title).strip()
+
             items.append({
                 "type": "obsidian",
                 "title": title,
@@ -347,6 +359,7 @@ def _fetch_obsidian(vault_path: str) -> list[dict]:
                 "priority": priority,
                 "due": due,
                 "state": "open",
+                "tags": tags,
             })
     return items
 
