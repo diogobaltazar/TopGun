@@ -6,7 +6,11 @@ Installs and manages Claude Code configuration.
 
 **GitHub CLI** authenticated: `gh auth login` — topgun uses `gh` for all GitHub operations. Run this once per host.
 
+**Obsidian** — used as a local task store for `topgun backlog`. Install via `brew install --cask obsidian` or from [obsidian.md](https://obsidian.md). Create a vault and enable the **Tasks** community plugin for due dates and priorities.
+
 ## Setup
+
+### Users
 
 Add an alias to your shell config (`~/.zshrc` or `~/.bashrc`):
 
@@ -15,19 +19,51 @@ alias topgun='docker run --rm -it \
   -v "$(pwd):/project" \
   -v "$HOME/.claude:/claude" \
   -v "$HOME/.ssh:/root/.ssh:ro" \
+  -v "$HOME/.config/topgun:/topgun-config" \
+  -v "$HOME/.topgun:/topgun-data" \
   -e GITHUB_TOKEN="$(gh auth token 2>/dev/null)" \
-  topgun:latest'
+  -e TOPGUN_CONFIG=/topgun-config/config.json \
+  -e TOPGUN_VAULT=/topgun-data/archive \
+  -e OBSIDIAN_DIR=/topgun-data \
+  ghcr.io/diogobaltazar/topgun:latest'
 ```
 
-Then reload your shell:
+### Developers
+
+Clone the repo and build from source:
+
+```bash
+git clone https://github.com/diogobaltazar/topgun ~/topgun
+cd ~/topgun
+docker compose build topgun
+```
+
+Add an alias:
+
+```bash
+alias topgun='GITHUB_TOKEN=$(gh auth token) docker compose --progress quiet -f $HOME/topgun/compose.yml run --rm topgun'
+```
+
+---
+
+Reload your shell after adding the alias:
 
 ```bash
 source ~/.zshrc
 ```
 
-You can now run any topgun command — `topgun upgrade`, `topgun install`, `topgun observe start` — from any directory.
+### GitHub tokens
 
-> **Developing topgun?** Run `docker compose build topgun` to build from source, then update your alias to use the local image name.
+Each GitHub source uses a named environment variable for its token. When you run `topgun backlog track`, you choose the variable name (default: `GITHUB_TOKEN`). Different repos — different orgs, different accounts — can use different variables.
+
+Export each token in `~/.zshrc`:
+
+```bash
+export GITHUB_TOKEN=$(gh auth token)
+export GITHUB_TOKEN_ROCHE=$(gh auth token --hostname github.roche.com)
+```
+
+topgun never stores tokens. It stores only the variable name and reads the value at runtime. If a token is missing or invalid, `topgun backlog watch` shows a warning for that source and continues fetching the rest.
 
 ## Commands
 

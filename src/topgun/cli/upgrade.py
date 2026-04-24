@@ -95,12 +95,8 @@ def upgrade(
 ):
     """Safely upgrade commands, hooks, and hook settings from the topgun source."""
 
-    console.print()
-    console.print(Panel("[bold magenta]topgun upgrade[/bold magenta]", expand=False))
-    console.print(f"  Target: [cyan]~/.claude[/cyan]\n")
-
     if not claude_dir.exists():
-        console.print(f"  [red]Error:[/red] {claude_dir} does not exist.\n")
+        console.print(f"error: {claude_dir} does not exist")
         raise typer.Exit(1)
 
     global_src = ROSE_DIR / "global"
@@ -108,6 +104,13 @@ def upgrade(
     results.add_column("status", style="bold", width=4)
     results.add_column("item")
     results.add_column("note", style="dim")
+
+    # Ensure ~/.topgun directory structure exists
+    topgun_dir = Path.home() / ".topgun"
+    for d in [topgun_dir, topgun_dir / "archive"]:
+        if not d.exists():
+            d.mkdir(parents=True, exist_ok=True)
+            results.add_row("[green]✓[/green]", str(d.relative_to(Path.home())), "created")
 
     # 1. Copy command files individually — never delete existing commands
     src_commands = global_src / "commands"
@@ -159,17 +162,10 @@ def upgrade(
             perm_changes = _merge_permissions(dst_settings, src_settings)
             dst_settings_path.write_text(json.dumps(dst_settings, indent=2) + "\n")
 
-            if hook_changes:
-                for change in hook_changes:
-                    results.add_row("[green]✓[/green]", "settings.json", change)
-            else:
-                results.add_row("~", "settings.json", "hooks already up to date")
-
-            if perm_changes:
-                for change in perm_changes:
-                    results.add_row("[green]✓[/green]", "settings.json", change)
-            else:
-                results.add_row("~", "settings.json", "permissions already up to date")
+            for change in hook_changes:
+                results.add_row("[green]✓[/green]", "settings.json", change)
+            for change in perm_changes:
+                results.add_row("[green]✓[/green]", "settings.json", change)
         else:
             # No existing settings.json — write hooks and permissions sections
             dst_settings_path.write_text(
@@ -185,4 +181,3 @@ def upgrade(
             results.add_row("[green]✓[/green]", "settings.json", "created with hooks and permissions")
 
     console.print(results)
-    console.print()
