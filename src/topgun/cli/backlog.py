@@ -336,16 +336,12 @@ def _fetch_obsidian(vault_path: str) -> list[dict]:
     # Inside Docker, vault may be remapped (e.g. /topgun-data/...), so we
     # reconstruct the host path by appending the relative portion to the
     # original vault_path from config.
-    host_vault = Path(vault_path).expanduser()
     items = []
     for md_file in vault.rglob("*.md"):
         try:
             text = md_file.read_text(encoding="utf-8")
         except Exception:
             continue
-        relative = md_file.relative_to(vault)
-        host_file = host_vault / relative
-        obs_url = f"obsidian://open?path={quote(str(host_file))}"
         for line in text.splitlines():
             if not _TASK_RE.match(line):
                 continue
@@ -361,6 +357,10 @@ def _fetch_obsidian(vault_path: str) -> list[dict]:
 
             tags = _TAG_RE.findall(title)
             title = _TAG_RE.sub("", title).strip()
+
+            # Search by task title — the only Obsidian URI approach that
+            # surfaces the specific checkbox rather than just opening the file.
+            obs_url = f"obsidian://search?query={quote(title)}"
 
             items.append({
                 "type": "obsidian",
