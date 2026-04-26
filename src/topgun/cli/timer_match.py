@@ -13,11 +13,12 @@ from topgun.cli.backlog import _fetch_all, _get_sources
 from topgun.inference.anthropic import call, load_prompt
 
 _GITHUB_NUM_RE = re.compile(r"^#?(\d+)$")
+_UID_RE = re.compile(r"^[0-9a-f]{8}$")
 
 
 def _uid(source_id: str) -> str:
-    """Derive a stable topgun UID from a source identity string."""
-    return "tg-" + hashlib.sha256(source_id.encode()).hexdigest()[:8]
+    """Derive a stable topgun UID — 8 hex chars, content-addressed from the source identity."""
+    return hashlib.sha256(source_id.encode()).hexdigest()[:8]
 
 
 def _task_id(item: dict) -> str:
@@ -30,7 +31,7 @@ def _task_id(item: dict) -> str:
 
 
 def fetch_tasks() -> list[dict]:
-    """Return all open backlog tasks as {uid, id, title, source} dicts."""
+    """Return all open backlog tasks as {uid, id, title, source, due, url} dicts."""
     sources = _get_sources()
     if not sources:
         return []
@@ -44,6 +45,8 @@ def fetch_tasks() -> list[dict]:
             "title": item["title"],
             "source": item["type"],
             "source_full": item.get("source_full", ""),
+            "due": item.get("due", ""),
+            "url": item.get("url", ""),
         })
     return result
 
@@ -86,14 +89,14 @@ def match_by_id(task_ref: str) -> dict | None:
     Look up a task without an SDK call.
 
     Accepts:
-    - topgun UID:    "tg-a3f2c1b4"
+    - topgun UID:    "a3f2c1b4"  (8 hex chars)
     - bare number:   "127" or "#127"  (GitHub issues)
     - full source ID: "github:owner/repo#127"
     """
     tasks = fetch_tasks()
 
-    # UID match
-    if task_ref.startswith("tg-"):
+    # UID match — 8 lowercase hex chars
+    if _UID_RE.match(task_ref):
         for task in tasks:
             if task["uid"] == task_ref:
                 return task

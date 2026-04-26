@@ -302,6 +302,7 @@ def _fetch_github(repo: str, token_env: str) -> tuple[list[dict], str]:
             "must_before": must_before,
             "best_before": best_before,
             "tags": tags,
+            "url": f"https://github.com/{repo}/issues/{issue['number']}",
         })
     return items, ""
 
@@ -326,16 +327,20 @@ def _resolve_vault_path(vault_path: str) -> Path:
 
 
 def _fetch_obsidian(vault_path: str) -> list[dict]:
+    from urllib.parse import quote
     vault = _resolve_vault_path(vault_path)
     if not vault.exists():
         return []
 
+    vault_name = vault.name
     items = []
     for md_file in vault.rglob("*.md"):
         try:
             text = md_file.read_text(encoding="utf-8")
         except Exception:
             continue
+        relative_file = str(md_file.relative_to(vault))
+        obs_url = f"obsidian://open?vault={quote(vault_name)}&file={quote(relative_file)}"
         for line in text.splitlines():
             if not _TASK_RE.match(line):
                 continue
@@ -360,6 +365,7 @@ def _fetch_obsidian(vault_path: str) -> list[dict]:
                 "due": due,
                 "state": "open",
                 "tags": tags,
+                "url": obs_url,
             })
     return items
 

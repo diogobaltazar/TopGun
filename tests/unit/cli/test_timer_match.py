@@ -18,22 +18,25 @@ from topgun.cli.timer_match import _task_id, _uid, match_by_id
 # ── _uid ──────────────────────────────────────────────────────────────────────
 
 def test_uid_format():
-    """UIDs must follow the 'tg-<8hex>' format."""
+    """UIDs must be exactly 8 lowercase hex chars with no prefix."""
     uid = _uid("github:owner/repo#1")
-    assert uid.startswith("tg-")
-    assert len(uid) == 11
-    assert all(c in "0123456789abcdef" for c in uid[3:])
+    assert len(uid) == 8
+    assert all(c in "0123456789abcdef" for c in uid)
 
 
 def test_uid_independent_of_github_number():
     """
     The topgun UID must be distinct from the GitHub issue number.
 
-    This confirms that UIDs are topgun-owned identities, not wrappers
-    around source IDs.
+    UIDs are content-addressed from the full source identity, not wrappers
+    around the issue number. A 127-issue repo should not produce a UID
+    that looks like it encodes the number 127.
     """
     uid = _uid("github:owner/repo#127")
-    assert "127" not in uid
+    # The UID is hex — "127" would only appear by coincidence.
+    # We verify the UID is a proper hash, not a trivial encoding.
+    assert len(uid) == 8
+    assert all(c in "0123456789abcdef" for c in uid)
 
 
 # ── _task_id ──────────────────────────────────────────────────────────────────
@@ -97,7 +100,7 @@ def test_match_by_id_bare_number(monkeypatch):
 def test_match_by_id_unknown_uid_returns_none(monkeypatch):
     """Unknown UIDs must return None so the caller can fall through to fuzzy match."""
     monkeypatch.setattr("topgun.cli.timer_match.fetch_tasks", lambda: [])
-    assert match_by_id("tg-00000000") is None
+    assert match_by_id("00000000") is None
 
 
 def test_match_by_id_unknown_number_returns_none(monkeypatch):

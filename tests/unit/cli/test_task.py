@@ -41,9 +41,11 @@ def test_uid_is_stable():
     assert _uid("github:owner/repo#127") == _uid("github:owner/repo#127")
 
 
-def test_uid_has_tg_prefix():
-    """UIDs must be prefixed with 'tg-' to be identifiable in user output."""
-    assert _uid("github:owner/repo#1").startswith("tg-")
+def test_uid_is_hex_only():
+    """UIDs must be plain 8 hex chars with no prefix."""
+    uid = _uid("github:owner/repo#1")
+    assert len(uid) == 8
+    assert all(c in "0123456789abcdef" for c in uid)
 
 
 def test_uid_differs_across_tasks():
@@ -52,8 +54,8 @@ def test_uid_differs_across_tasks():
 
 
 def test_uid_length():
-    """UIDs must be exactly 11 characters: 'tg-' + 8 hex chars."""
-    assert len(_uid("github:owner/repo#1")) == 11
+    """UIDs must be exactly 8 hex characters."""
+    assert len(_uid("github:owner/repo#1")) == 8
 
 
 # ── _fmt_duration ─────────────────────────────────────────────────────────────

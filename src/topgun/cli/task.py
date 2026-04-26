@@ -7,7 +7,7 @@ Replaces the separate `backlog` and `timer` commands. All task sources
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -26,7 +26,6 @@ from topgun.cli.backlog import (
     _resolve_vault_path,
     PRIORITY_COLOR,
     PRIORITY_ORDER,
-    TYPE_COLOR,
 )
 from topgun.cli.timer_match import fetch_tasks, match, match_by_id, _uid
 
@@ -58,9 +57,36 @@ def _help(ctx: typer.Context):
 # Formatting helpers
 # ---------------------------------------------------------------------------
 
-def _type_tag(t: str) -> str:
-    color = TYPE_COLOR.get(t, "white")
-    return f"[{color}]{t}[/{color}]"
+_SOURCE_ICON = {
+    "github":   ("🐙", "color(39)"),    # blue
+    "obsidian": ("◆",  "color(135)"),   # purple
+}
+
+
+def _source_badge(source: str) -> str:
+    icon, color = _SOURCE_ICON.get(source, (source, "white"))
+    return f"[{color}]{icon}[/{color}]"
+
+
+def _due_color(due: str | None) -> str:
+    """Return a Rich color tag for a due date based on urgency."""
+    if not due:
+        return "dim"
+    try:
+        delta = (date.fromisoformat(due) - date.today()).days
+    except ValueError:
+        return "dim"
+    if delta < 0:
+        return "bold red"
+    if delta == 0:
+        return "red"
+    if delta <= 3:
+        return "color(202)"   # orange-red
+    if delta <= 7:
+        return "color(208)"   # orange
+    if delta <= 14:
+        return "yellow"
+    return "green"
 
 
 def _fmt_duration(seconds: float) -> str:
@@ -278,6 +304,11 @@ def status():
 # Commands — task list and detail
 # ---------------------------------------------------------------------------
 
+def _list_sort_key(t: dict) -> tuple:
+    due = t.get("due") or ""
+    return (due or "9999-99-99", t.get("source_full", ""), t["title"])
+
+
 @app.command("list")
 def list_cmd(
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Show source path column"),
@@ -299,17 +330,26 @@ def list_cmd(
 
     table = Table(box=box.SIMPLE, show_header=True, header_style="bold", pad_edge=False)
     table.add_column("UID", style="dim", no_wrap=True)
-    table.add_column("Type", no_wrap=True)
+    table.add_column(" ", no_wrap=True)   # source icon
     table.add_column("Title")
+    table.add_column("Due", width=12, no_wrap=True)
     table.add_column("Time", justify="right")
     if verbose:
         table.add_column("Source", style="dim")
 
-    for t in tasks:
+    for t in sorted(tasks, key=_list_sort_key):
         seconds = totals.get(t["id"])
         time_str = _fmt_duration(seconds) if seconds else "—"
         marker = " [green]●[/green]" if t["id"] == active_id else ""
-        row = [t["uid"], _type_tag(t["source"]), t["title"], f"{time_str}{marker}"]
+
+        due = t.get("due", "")
+        dc = _due_color(due)
+        due_cell = f"[{dc}]{due}[/{dc}]" if due else "[dim]—[/dim]"
+
+        url = t.get("url", "")
+        title_cell = f"[link={url}]{t['title']}[/link]" if url else t["title"]
+
+        row = [t["uid"], _source_badge(t["source"]), title_cell, due_cell, f"{time_str}{marker}"]
         if verbose:
             row.append(t.get("source_full", ""))
         table.add_row(*row)
@@ -331,9 +371,15 @@ def show(
     uid = resolved["uid"]
     total_s = sum(i["duration_s"] for i in intervals)
 
+    url = resolved.get("url", "")
+    title_str = f"[link={url}]{resolved['title']}[/link]" if url else f"[cyan]{resolved['title']}[/cyan]"
+
     console.print(f"\n  [dim]uid[/dim]     {uid}")
     console.print(f"  [dim]source[/dim]  {resolved['id']}")
-    console.print(f"  [dim]title[/dim]   [cyan]{resolved['title']}[/cyan]\n")
+    console.print(f"  [dim]title[/dim]   {title_str}")
+    if url:
+        console.print(f"  [dim]url[/dim]     [dim]{url}[/dim]")
+    console.print()
 
     if not intervals:
         console.print("  [dim]no time recorded for this task[/dim]\n")
