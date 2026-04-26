@@ -7,17 +7,15 @@ Each line is either a `start` or `stop` event with a task ID and ISO timestamp.
 
 import json
 import os
-import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 import typer
 from rich.console import Console
 from rich.table import Table
 from rich import box
 
-from topgun.cli.timer_match import match, match_by_branch, match_by_id
+from topgun.cli.timer_match import match, match_by_id
 
 console = Console()
 app = typer.Typer(name="timer", help="Track time spent per task.", add_completion=False, invoke_without_command=True)
@@ -92,35 +90,13 @@ def _fmt_duration(seconds: float) -> str:
 # Task resolution
 # ---------------------------------------------------------------------------
 
-def _current_branch() -> str | None:
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True, text=True, timeout=3,
-        )
-        return result.stdout.strip() if result.returncode == 0 else None
-    except Exception:
-        return None
-
-
-def _resolve_task(task_arg: str | None) -> dict:
+def _resolve_task(task_arg: str) -> dict:
     """
-    Resolve the target task from --task argument, branch inference, or fuzzy match.
+    Resolve the target task from --task argument.
 
     Returns {id, title, source} or raises typer.Exit on failure.
     """
-    # 1. No argument — try branch inference
-    if task_arg is None:
-        branch = _current_branch()
-        if branch:
-            task = match_by_branch(branch)
-            if task:
-                console.print(f"[dim]inferred from branch:[/dim] [cyan]{task['title']}[/cyan]")
-                return task
-        console.print("[yellow]could not infer task from branch — use --task[/yellow]")
-        raise typer.Exit(1)
-
-    # 2. Explicit ID — direct lookup, no SDK call
+    # 1. Explicit ID — direct lookup, no SDK call
     task = match_by_id(task_arg)
     if task:
         return task
@@ -162,7 +138,7 @@ def _resolve_task(task_arg: str | None) -> dict:
 
 @app.command("start")
 def start(
-    task: Optional[str] = typer.Option(None, "--task", "-t", help="Task ID, issue number, or description"),
+    task: str = typer.Option(..., "--task", "-t", help="Task ID, issue number, or description"),
 ):
     """Start recording time for a task."""
     active = _active_period()

@@ -13,7 +13,7 @@ What is NOT covered here:
 
 import pytest
 
-from topgun.cli.timer_match import _task_id, match_by_branch, match_by_id
+from topgun.cli.timer_match import _task_id, match_by_id
 
 
 # ── _task_id ──────────────────────────────────────────────────────────────────
@@ -34,40 +34,6 @@ def test_task_id_obsidian_uses_title():
     """Obsidian tasks have no issue number — ID must include vault path and title."""
     item = {"type": "obsidian", "title": "Buy milk", "source_full": "/Users/x/vault"}
     assert _task_id(item) == "obsidian:/Users/x/vault:Buy milk"
-
-
-# ── match_by_branch ───────────────────────────────────────────────────────────
-
-def test_match_by_branch_extracts_github_issue(monkeypatch):
-    """
-    Branch names like feat/124-short-desc must resolve to the matching GitHub task.
-
-    This is the zero-argument fast path: the user runs `topgun timer start`
-    from a feature branch and the task is inferred without any user input or
-    API call. If the extraction regex is wrong, every branch-based start fails.
-    """
-    tasks = [
-        {"id": "github:owner/repo#124", "title": "#124 Fix auth", "source": "github"},
-        {"id": "github:owner/repo#125", "title": "#125 Add logging", "source": "github"},
-    ]
-    monkeypatch.setattr("topgun.cli.timer_match.fetch_tasks", lambda: tasks)
-
-    result = match_by_branch("feat/124-fix-auth-bug")
-    assert result is not None
-    assert result["id"] == "github:owner/repo#124"
-
-
-def test_match_by_branch_no_match_returns_none(monkeypatch):
-    """Branches without an issue number (e.g. 'main', 'hotfix-typo') must return None."""
-    monkeypatch.setattr("topgun.cli.timer_match.fetch_tasks", lambda: [])
-    assert match_by_branch("main") is None
-    assert match_by_branch("hotfix-typo") is None
-
-
-def test_match_by_branch_number_not_in_backlog(monkeypatch):
-    """A valid branch pattern whose issue is not in the backlog must return None."""
-    monkeypatch.setattr("topgun.cli.timer_match.fetch_tasks", lambda: [])
-    assert match_by_branch("feat/999-nonexistent") is None
 
 
 # ── match_by_id ───────────────────────────────────────────────────────────────

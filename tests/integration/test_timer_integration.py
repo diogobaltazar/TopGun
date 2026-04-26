@@ -9,7 +9,6 @@ What is tested:
 
 What is NOT tested:
 - SDK calls to Claude (requires live credentials and network)
-- Branch inference (requires a real git repo — tested manually via Local Run)
 - Obsidian/GitHub backlog fetching (tested in test_backlog.py)
 
 Edge cases covered:
@@ -54,7 +53,7 @@ def test_start_stop_report_round_trip(isolated_log, monkeypatch):
     fixed_task = {"id": "github:owner/repo#1", "title": "#1 Test task", "source": "github"}
     monkeypatch.setattr("topgun.cli.timer._resolve_task", lambda _arg: fixed_task)
 
-    result = runner.invoke(app, ["start"])
+    result = runner.invoke(app, ["start", "--task", "1"])
     assert result.exit_code == 0, result.output
 
     result = runner.invoke(app, ["stop"])
@@ -84,8 +83,8 @@ def test_start_blocked_when_already_running(isolated_log, monkeypatch):
     fixed_task = {"id": "github:owner/repo#1", "title": "#1 Test task", "source": "github"}
     monkeypatch.setattr("topgun.cli.timer._resolve_task", lambda _arg: fixed_task)
 
-    runner.invoke(app, ["start"])
-    result = runner.invoke(app, ["start"])
+    runner.invoke(app, ["start", "--task", "1"])
+    result = runner.invoke(app, ["start", "--task", "1"])
     assert result.exit_code != 0
     assert "already running" in result.output
 
@@ -105,7 +104,7 @@ def test_status_shows_running_task(isolated_log, monkeypatch):
     fixed_task = {"id": "github:owner/repo#7", "title": "#7 Active task", "source": "github"}
     monkeypatch.setattr("topgun.cli.timer._resolve_task", lambda _arg: fixed_task)
 
-    runner.invoke(app, ["start"])
+    runner.invoke(app, ["start", "--task", "1"])
     result = runner.invoke(app, ["status"])
     assert result.exit_code == 0
     assert "#7 Active task" in result.output
@@ -122,9 +121,9 @@ def test_multiple_cycles_accumulate_in_report(isolated_log, monkeypatch):
     fixed_task = {"id": "github:owner/repo#1", "title": "#1 Test task", "source": "github"}
     monkeypatch.setattr("topgun.cli.timer._resolve_task", lambda _arg: fixed_task)
 
-    runner.invoke(app, ["start"])
+    runner.invoke(app, ["start", "--task", "1"])
     runner.invoke(app, ["stop"])
-    runner.invoke(app, ["start"])
+    runner.invoke(app, ["start", "--task", "1"])
     runner.invoke(app, ["stop"])
 
     events = _events(isolated_log)

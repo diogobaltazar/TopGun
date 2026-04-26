@@ -11,7 +11,6 @@ import re
 from topgun.cli.backlog import _fetch_all, _get_sources
 from topgun.inference.anthropic import call, load_prompt
 
-_BRANCH_RE = re.compile(r"(?:feat|fix|chore|refactor|docs)/(\d+)-")
 _GITHUB_NUM_RE = re.compile(r"^#?(\d+)$")
 
 
@@ -65,24 +64,6 @@ def match(query: str) -> list[dict]:
         return candidates
     except json.JSONDecodeError:
         return []
-
-
-def match_by_branch(branch: str) -> dict | None:
-    """
-    Infer the task from a git branch name.
-
-    Extracts an issue number from branch names like feat/124-short-description
-    and looks it up directly in the task list — no SDK call needed.
-    """
-    m = _BRANCH_RE.search(branch)
-    if not m:
-        return None
-    number = m.group(1)
-    tasks = fetch_tasks()
-    for task in tasks:
-        if task["id"].endswith(f"#{number}"):
-            return task
-    return None
 
 
 def match_by_id(task_id: str) -> dict | None:
