@@ -332,13 +332,20 @@ def _fetch_obsidian(vault_path: str) -> list[dict]:
     if not vault.exists():
         return []
 
+    # host_vault is the path that Obsidian on the host OS knows about.
+    # Inside Docker, vault may be remapped (e.g. /topgun-data/...), so we
+    # reconstruct the host path by appending the relative portion to the
+    # original vault_path from config.
+    host_vault = Path(vault_path).expanduser()
     items = []
     for md_file in vault.rglob("*.md"):
         try:
             text = md_file.read_text(encoding="utf-8")
         except Exception:
             continue
-        obs_url = f"obsidian://open?path={quote(str(md_file.resolve()))}"
+        relative = md_file.relative_to(vault)
+        host_file = host_vault / relative
+        obs_url = f"obsidian://open?path={quote(str(host_file))}"
         for line in text.splitlines():
             if not _TASK_RE.match(line):
                 continue
