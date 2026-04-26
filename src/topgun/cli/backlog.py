@@ -332,15 +332,13 @@ def _fetch_obsidian(vault_path: str) -> list[dict]:
     if not vault.exists():
         return []
 
-    vault_name = vault.name
     items = []
     for md_file in vault.rglob("*.md"):
         try:
             text = md_file.read_text(encoding="utf-8")
         except Exception:
             continue
-        relative_file = str(md_file.relative_to(vault))
-        obs_url = f"obsidian://open?vault={quote(vault_name)}&file={quote(relative_file)}"
+        obs_url = f"obsidian://open?path={quote(str(md_file.resolve()))}"
         for line in text.splitlines():
             if not _TASK_RE.match(line):
                 continue

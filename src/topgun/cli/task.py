@@ -26,6 +26,7 @@ from topgun.cli.backlog import (
     _resolve_vault_path,
     PRIORITY_COLOR,
     PRIORITY_ORDER,
+    TYPE_COLOR,
 )
 from topgun.cli.timer_match import fetch_tasks, match, match_by_id, _uid
 
@@ -57,15 +58,9 @@ def _help(ctx: typer.Context):
 # Formatting helpers
 # ---------------------------------------------------------------------------
 
-_SOURCE_ICON = {
-    "github":   ("🐙", "color(39)"),    # blue
-    "obsidian": ("◆",  "color(135)"),   # purple
-}
-
-
-def _source_badge(source: str) -> str:
-    icon, color = _SOURCE_ICON.get(source, (source, "white"))
-    return f"[{color}]{icon}[/{color}]"
+def _type_tag(t: str) -> str:
+    color = TYPE_COLOR.get(t, "white")
+    return f"[{color}]{t}[/{color}]"
 
 
 def _due_color(due: str | None) -> str:
@@ -330,13 +325,14 @@ def list_cmd(
 
     table = Table(box=box.SIMPLE, show_header=True, header_style="bold", pad_edge=False)
     table.add_column("UID", style="dim", no_wrap=True)
-    table.add_column(" ", no_wrap=True)   # source icon
+    table.add_column("Type", no_wrap=True)
     table.add_column("Title")
     table.add_column("Due", width=12, no_wrap=True)
     table.add_column("Time", justify="right")
     if verbose:
         table.add_column("Source", style="dim")
 
+    has_links = False
     for t in sorted(tasks, key=_list_sort_key):
         seconds = totals.get(t["id"])
         time_str = _fmt_duration(seconds) if seconds else "—"
@@ -347,14 +343,20 @@ def list_cmd(
         due_cell = f"[{dc}]{due}[/{dc}]" if due else "[dim]—[/dim]"
 
         url = t.get("url", "")
-        title_cell = f"[link={url}]{t['title']}[/link]" if url else t["title"]
+        if url:
+            has_links = True
+            title_cell = f"{t['title']} [link={url}][dim]↗[/dim][/link]"
+        else:
+            title_cell = t["title"]
 
-        row = [t["uid"], _source_badge(t["source"]), title_cell, due_cell, f"{time_str}{marker}"]
+        row = [t["uid"], _type_tag(t["source"]), title_cell, due_cell, f"{time_str}{marker}"]
         if verbose:
             row.append(t.get("source_full", ""))
         table.add_row(*row)
 
     console.print(table)
+    if has_links:
+        console.print("[dim]  ↗ click to open task in browser or Obsidian[/dim]")
 
 
 @app.command("show")
