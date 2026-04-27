@@ -1,5 +1,5 @@
 """
-Anthropic SDK client for topgun inference calls.
+Anthropic API client for topgun inference calls.
 
 Every call is appended to ~/.topgun/logs/inference/anthropic/calls.jsonl
 so that all direct API usage is auditable independently of Claude Code sessions.
@@ -57,32 +57,45 @@ def call(prompt: str, system: str, command: str) -> str:
     Returns:
         The raw text content of the model's response.
     """
-    import anthropic
+    import httpx
 
-    base_url = os.environ.get("ANTHROPIC_BASE_URL", "").strip() or None
-    client = anthropic.Anthropic(
-        api_key=_get_token(),
-        base_url=base_url,
-        default_headers={_CUSTOM_HEADER: _CUSTOM_HEADER_VALUE},
-    )
+    token = _get_token()
+    base_url = (os.environ.get("ANTHROPIC_BASE_URL", "").strip() or "https://api.anthropic.com").rstrip("/")
 
+    # Use httpx directly rather than the Anthropic SDK. The build-cli proxy
+    # requires Authorization: Bearer (not x-api-key) and rejects the SDK's
+    # x-stainless-* diagnostic headers. A raw httpx call avoids both issues
+    # and works identically against api.anthropic.com.
+    body = {
+        "model": _MODEL,
+        "max_tokens": 1024,
+        "system": system,
+        "messages": [{"role": "user", "content": prompt}],
+    }
     t0 = time.monotonic()
-    response = client.messages.create(
-        model=_MODEL,
-        max_tokens=1024,
-        system=system,
-        messages=[{"role": "user", "content": prompt}],
+    response = httpx.post(
+        f"{base_url}/v1/messages",
+        headers={
+            "authorization": f"Bearer {token}",
+            "content-type": "application/json",
+            "anthropic-version": "2023-06-01",
+            _CUSTOM_HEADER: _CUSTOM_HEADER_VALUE,
+        },
+        content=json.dumps(body).encode(),
+        timeout=60,
     )
     duration_ms = round((time.monotonic() - t0) * 1000)
+    response.raise_for_status()
+    data = response.json()
 
-    usage = response.usage
+    usage = data.get("usage", {})
     _append_log({
         "ts": datetime.now(timezone.utc).isoformat(),
         "command": command,
         "model": _MODEL,
-        "input_tokens": usage.input_tokens,
-        "output_tokens": usage.output_tokens,
+        "input_tokens": usage.get("input_tokens", 0),
+        "output_tokens": usage.get("output_tokens", 0),
         "duration_ms": duration_ms,
     })
 
-    return response.content[0].text
+    return data["content"][0]["text"]
