@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from typer.testing import CliRunner
 
-from topgun.cli.session import _format_size, app
+from topgun.cli.session import ARCHIVE, _format_size, app
 
 runner = CliRunner()
 
@@ -84,6 +84,73 @@ def test_list_shows_sessions(tmp_path):
     assert result.exit_code == 0
     assert "abc-123" in result.output
     assert "def-456" in result.output
+
+
+def test_archive_moves_transcript_and_session_dir(tmp_path):
+    """archive must move both the .jsonl transcript and the matching uuid/ directory.
+
+    This is the core correctness test for the archive command. Claude Code stores
+    subagent transcripts in <uuid>/subagents/ alongside the main .jsonl file.
+    Archiving only the .jsonl (the previous behaviour) silently loses all subagent
+    data. This test verifies both artefacts are relocated and the source is empty.
+    Edge cases not covered: sessions without a uuid/ directory (covered separately),
+    and archive path overrides via TOPGUN_ARCHIVE env var.
+    """
+    projects = tmp_path / "projects"
+    proj = projects / "-Users-alice-project"
+    proj.mkdir(parents=True)
+
+    session_id = "abc-123"
+    transcript = proj / f"{session_id}.jsonl"
+    transcript.write_text('{"role":"user"}')
+
+    session_dir = proj / session_id
+    subagents = session_dir / "subagents"
+    subagents.mkdir(parents=True)
+    (subagents / "agent-x.jsonl").write_text("{}")
+
+    archive_root = tmp_path / "archive"
+
+    with (
+        patch("topgun.cli.session.CLAUDE_PROJECTS", projects),
+        patch("topgun.cli.session.ARCHIVE", archive_root),
+    ):
+        result = runner.invoke(app, ["archive", session_id])
+
+    assert result.exit_code == 0
+    dest_dir = archive_root / "projects" / "-Users-alice-project"
+    assert (dest_dir / f"{session_id}.jsonl").exists(), "transcript must be in archive"
+    assert (dest_dir / session_id / "subagents" / "agent-x.jsonl").exists(), "session dir must be in archive"
+    assert not transcript.exists(), "original transcript must be gone"
+    assert not session_dir.exists(), "original session dir must be gone"
+
+
+def test_archive_works_without_session_dir(tmp_path):
+    """archive must succeed even when no uuid/ directory exists alongside the transcript.
+
+    Older sessions (or sessions with no subagents) may have only a .jsonl file.
+    The archive command must not error in this case.
+    """
+    projects = tmp_path / "projects"
+    proj = projects / "-Users-alice-project"
+    proj.mkdir(parents=True)
+
+    session_id = "def-456"
+    transcript = proj / f"{session_id}.jsonl"
+    transcript.write_text('{"role":"user"}')
+
+    archive_root = tmp_path / "archive"
+
+    with (
+        patch("topgun.cli.session.CLAUDE_PROJECTS", projects),
+        patch("topgun.cli.session.ARCHIVE", archive_root),
+    ):
+        result = runner.invoke(app, ["archive", session_id])
+
+    assert result.exit_code == 0
+    dest_dir = archive_root / "projects" / "-Users-alice-project"
+    assert (dest_dir / f"{session_id}.jsonl").exists()
+    assert not transcript.exists()
 
 
 def test_list_sorted_newest_first(tmp_path):
