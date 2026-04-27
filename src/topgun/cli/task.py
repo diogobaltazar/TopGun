@@ -551,17 +551,14 @@ def add():
         console.print("[yellow]no Obsidian sources tracked — run: topgun task track --type obsidian[/yellow]")
         raise typer.Exit(1)
 
-    if len(numbered) == 1:
-        chosen = numbered[0]
-    else:
-        raw = typer.prompt("source #", default="1")
-        try:
-            choice_idx = int(raw.strip()) - 1
-            assert 0 <= choice_idx < len(numbered)
-        except (ValueError, AssertionError):
-            console.print("[red]invalid selection[/red]")
-            raise typer.Exit(1)
-        chosen = numbered[choice_idx]
+    raw = typer.prompt("source #", default="1")
+    try:
+        choice_idx = int(raw.strip()) - 1
+        assert 0 <= choice_idx < len(numbered)
+    except (ValueError, AssertionError):
+        console.print("[red]invalid selection[/red]")
+        raise typer.Exit(1)
+    chosen = numbered[choice_idx]
 
     today = date.today().isoformat()
     text = click.edit(_ADD_EDITOR_TEMPLATE)
