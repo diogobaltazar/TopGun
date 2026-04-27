@@ -72,18 +72,25 @@ def call(prompt: str, system: str, command: str) -> str:
         "system": system,
         "messages": [{"role": "user", "content": prompt}],
     }
+    url = f"{base_url}/v1/messages"
     t0 = time.monotonic()
-    response = httpx.post(
-        f"{base_url}/v1/messages",
-        headers={
-            "authorization": f"Bearer {token}",
-            "content-type": "application/json",
-            "anthropic-version": "2023-06-01",
-            _CUSTOM_HEADER: _CUSTOM_HEADER_VALUE,
-        },
-        content=json.dumps(body).encode(),
-        timeout=60,
-    )
+    try:
+        response = httpx.post(
+            url,
+            headers={
+                "authorization": f"Bearer {token}",
+                "content-type": "application/json",
+                "anthropic-version": "2023-06-01",
+                _CUSTOM_HEADER: _CUSTOM_HEADER_VALUE,
+            },
+            content=json.dumps(body).encode(),
+            timeout=60,
+        )
+    except httpx.ConnectError as e:
+        raise RuntimeError(
+            f"Could not connect to {url} — check ANTHROPIC_BASE_URL and network access.\n"
+            f"Underlying error: {e}"
+        ) from None
     duration_ms = round((time.monotonic() - t0) * 1000)
     response.raise_for_status()
     data = response.json()
