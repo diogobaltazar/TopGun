@@ -577,8 +577,14 @@ def add():
     user_msg = f"Today's date: {today}\n\nTask description:\n{description}"
     raw_json = call(prompt=user_msg, system=system, command="task_add")
 
+    # Strip markdown code fences if the model wrapped the JSON.
+    clean = raw_json.strip()
+    if clean.startswith("```"):
+        clean = re.sub(r"^```[a-z]*\n?", "", clean)
+        clean = re.sub(r"\n?```$", "", clean.rstrip())
+
     try:
-        structured = json.loads(raw_json)
+        structured = json.loads(clean)
     except json.JSONDecodeError:
         console.print("[red]could not parse model response — task not saved[/red]")
         console.print(f"[dim]{raw_json}[/dim]")
