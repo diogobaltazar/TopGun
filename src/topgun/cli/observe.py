@@ -20,12 +20,13 @@ from pathlib import Path
 
 import typer
 
-PROJECTS_DIR    = Path(os.environ.get("PROJECTS_DIR",  Path.home() / ".claude" / "projects"))
-SESSIONS_DIR    = Path(os.environ.get("SESSIONS_DIR",  Path.home() / ".claude" / "sessions"))
-TEAMS_DIR       = Path(os.environ.get("TEAMS_DIR",     Path.home() / ".claude" / "teams"))
-SUBAGENT_LOG    = Path(os.environ.get("SUBAGENT_LOG",  Path.home() / ".claude" / "logs" / "subagent-events.jsonl"))
-MESSAGE_LOG     = Path(os.environ.get("MESSAGE_LOG",   Path.home() / ".claude" / "logs" / "message-events.jsonl"))
-OBSERVE_CONFIG  = Path(os.environ.get("OBSERVE_CONFIG", Path.home() / ".claude" / "observe-config.json"))
+_claude_dir     = Path(os.environ.get("CLAUDE_DIR",    Path.home() / ".claude"))
+PROJECTS_DIR    = Path(os.environ.get("PROJECTS_DIR",  _claude_dir / "projects"))
+SESSIONS_DIR    = Path(os.environ.get("SESSIONS_DIR",  _claude_dir / "sessions"))
+TEAMS_DIR       = Path(os.environ.get("TEAMS_DIR",     _claude_dir / "teams"))
+SUBAGENT_LOG    = Path(os.environ.get("SUBAGENT_LOG",  _claude_dir / "logs" / "subagent-events.jsonl"))
+MESSAGE_LOG     = Path(os.environ.get("MESSAGE_LOG",   _claude_dir / "logs" / "message-events.jsonl"))
+OBSERVE_CONFIG  = Path(os.environ.get("OBSERVE_CONFIG", _claude_dir / "observe-config.json"))
 
 DEBOUNCE_S      = 0.15   # seconds after last event before redrawing
 HIGHLIGHT_TTL   = 2.0    # seconds a changed-value highlight stays lit
