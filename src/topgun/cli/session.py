@@ -16,9 +16,10 @@ def _session_help(ctx: typer.Context):
         typer.echo(ctx.get_help())
 console = Console()
 
-_CLAUDE_DIR     = Path(os.environ.get("CLAUDE_DIR", Path.home() / ".claude"))
-CLAUDE_PROJECTS = Path(os.environ.get("PROJECTS_DIR", _CLAUDE_DIR / "projects"))
-VAULT           = Path(os.environ.get("TOPGUN_VAULT", Path.home() / ".topgun" / "archive"))
+_CLAUDE_DIR     = Path(os.environ.get("CLAUDE_DIR",      Path.home() / ".claude"))
+_TOPGUN_DIR     = Path(os.environ.get("TOPGUN_DIR",      Path.home() / ".topgun"))
+CLAUDE_PROJECTS = Path(os.environ.get("PROJECTS_DIR",    _CLAUDE_DIR / "projects"))
+ARCHIVE         = Path(os.environ.get("TOPGUN_ARCHIVE",  _TOPGUN_DIR / "archive"))
 
 
 def _find_transcript(session_id: str) -> tuple[Path, Path]:
@@ -84,15 +85,26 @@ def list_sessions():
 def archive(
     session_id: str = typer.Argument(..., help="Session UUID to archive"),
 ):
-    """Move a session transcript from ~/.claude to ~/.topgun-vault/archive/projects/."""
+    """Move a session (transcript + subagents) from ~/.claude to ~/.topgun/archive/."""
     transcript, project_dir = _find_transcript(session_id)
-    dest_dir = VAULT / "archive" / "projects" / project_dir.name
+    dest_dir = ARCHIVE / "projects" / project_dir.name
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / transcript.name
-    shutil.move(str(transcript), dest)
-    console.print(f"[green]Archived[/green] {transcript.name}")
-    console.print(f"  [dim]{transcript}[/dim]")
-    console.print(f"  → [bold]{dest}[/bold]")
+
+    # Move the .jsonl transcript.
+    dest_transcript = dest_dir / transcript.name
+    shutil.move(str(transcript), dest_transcript)
+
+    # Move the matching session directory (subagents etc.) if it exists.
+    session_dir = project_dir / session_id
+    dest_session_dir = dest_dir / session_id
+    has_session_dir = session_dir.exists()
+    if has_session_dir:
+        shutil.move(str(session_dir), dest_session_dir)
+
+    console.print(f"[green]archived[/green]  {transcript.name}")
+    console.print(f"  → [dim]{dest_transcript}[/dim]")
+    if has_session_dir:
+        console.print(f"  → [dim]{dest_session_dir}/[/dim]")
 
 
 @app.command("delete")
@@ -106,19 +118,3 @@ def delete(
         typer.confirm(f"Delete {transcript}?", abort=True)
     transcript.unlink()
     console.print(f"[red]Deleted[/red] {transcript}")
-
-
-@app.command("clone")
-def clone(
-    session_id: str = typer.Argument(..., help="Session UUID to clone"),
-):
-    """Copy a session transcript from ~/.claude to ~/.topgun-vault/clone/projects/{id}/{datetime}/."""
-    transcript, _project_dir = _find_transcript(session_id)
-    timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
-    dest_dir = VAULT / "clone" / "projects" / session_id / timestamp
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / transcript.name
-    shutil.copy2(str(transcript), dest)
-    console.print(f"[green]Cloned[/green] {transcript.name}")
-    console.print(f"  [dim]{transcript}[/dim]")
-    console.print(f"  → [bold]{dest}[/bold]")
