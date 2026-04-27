@@ -16,7 +16,8 @@ def _session_help(ctx: typer.Context):
         typer.echo(ctx.get_help())
 console = Console()
 
-CLAUDE_PROJECTS = Path(os.environ.get("PROJECTS_DIR", Path.home() / ".claude" / "projects"))
+_CLAUDE_DIR     = Path(os.environ.get("CLAUDE_DIR", Path.home() / ".claude"))
+CLAUDE_PROJECTS = Path(os.environ.get("PROJECTS_DIR", _CLAUDE_DIR / "projects"))
 VAULT           = Path(os.environ.get("TOPGUN_VAULT", Path.home() / ".topgun" / "archive"))
 
 
